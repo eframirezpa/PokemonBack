@@ -22,6 +22,19 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
+// Debug: ver config de DB (sin password)
+app.get('/api/debug', (_req, res) => {
+  res.json({
+    DB_HOST:   process.env.DB_HOST     || '(no definido)',
+    DB_PORT:   process.env.DB_PORT     || '(no definido)',
+    DB_NAME:   process.env.DB_NAME     || '(no definido)',
+    DB_USER:   process.env.DB_USER     || '(no definido)',
+    DB_SSL:    process.env.DB_SSL      || '(no definido)',
+    DB_SCHEMA: process.env.DB_SCHEMA   || '(no definido)',
+    HAS_PASS:  !!process.env.DB_PASSWORD,
+  })
+})
+
 // Rutas
 app.use('/api/pokemon',    pokemonRoutes)
 app.use('/api/moves',      movesRoutes)
@@ -38,8 +51,8 @@ app.use((_req, res) => {
 
 // Error handler global
 app.use((err, _req, res, _next) => {
-  console.error(err)
-  res.status(500).json({ error: 'Error interno del servidor' })
+  console.error('GLOBAL ERROR:', err.message, err.code, err.stack)
+  res.status(500).json({ error: 'Error interno del servidor', detail: err.message })
 })
 
 module.exports = app
