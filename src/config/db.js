@@ -1,16 +1,20 @@
-// Capa de conexión a PostgreSQL.
-// Para migrar a Supabase: reemplaza este Pool por el cliente @supabase/supabase-js
-// y actualiza el método query() en consecuencia.
 const { Pool } = require('pg')
 require('dotenv').config()
 
-const pool = new Pool({
-  host:     process.env.DB_HOST,
-  port:     Number(process.env.DB_PORT),
-  database: process.env.DB_NAME,
-  user:     process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-})
+const pool = new Pool(
+  process.env.DATABASE_URL
+    ? {
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false },
+      }
+    : {
+        host:     process.env.DB_HOST,
+        port:     Number(process.env.DB_PORT),
+        database: process.env.DB_NAME,
+        user:     process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+      }
+)
 
 const SCHEMA = process.env.DB_SCHEMA || 'juego'
 
