@@ -7,21 +7,21 @@ const findAll = async ({ limit = 20, offset = 0, search = '', type = '' }) => {
 
   if (search) {
     params.push(`%${search}%`)
-    conditions.push(`moves_move_name ILIKE $${params.length}`)
+    conditions.push(`move_name ILIKE $${params.length}`)
   }
   if (type) {
     params.push(type)
-    conditions.push(`moves_move_type = $${params.length}`)
+    conditions.push(`move_type = $${params.length}`)
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   params.push(limit, offset)
 
   const { rows } = await query(
-    `SELECT move_id, moves_move_name, moves_move_type, moves_move_power_1,
-            moves_move_pp, moves_move_time, moves_move_range, moves_move_has_damage
+    `SELECT move_id, move_name, move_type, move_power_1,
+            move_pp, move_time, move_range, move_has_damage
      FROM ${T} ${where}
-     ORDER BY moves_move_name
+     ORDER BY move_name
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   )
