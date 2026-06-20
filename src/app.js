@@ -1,7 +1,11 @@
 require('dotenv').config()
+const path    = require('path')
 const express = require('express')
 const cors    = require('cors')
 
+const authRoutes             = require('./routes/auth.routes')
+const rolesRoutes            = require('./routes/roles.routes')
+const usuariosRoutes         = require('./routes/usuarios.routes')
 const pokemonRoutes          = require('./routes/pokemon.routes')
 const movesRoutes            = require('./routes/moves.routes')
 const abilitiesRoutes        = require('./routes/abilities.routes')
@@ -17,6 +21,7 @@ const naturesRoutes          = require('./routes/natures.routes')
 const originsRoutes          = require('./routes/origins.routes')
 const weaponPropertiesRoutes = require('./routes/weapon_properties.routes')
 const weaponTypesRoutes      = require('./routes/weapon_types.routes')
+const partidaRoutes          = require('./routes/partida.routes')
 
 const app = express()
 
@@ -24,6 +29,7 @@ app.use(cors({
   origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : '*',
 }))
 app.use(express.json())
+app.use(express.static(path.join(__dirname, '../public')))
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -44,6 +50,9 @@ app.get('/api/debug', (_req, res) => {
 })
 
 // Rutas
+app.use('/api/auth',              authRoutes)
+app.use('/api/roles',             rolesRoutes)
+app.use('/api/usuarios',          usuariosRoutes)
 app.use('/api/pokemon',           pokemonRoutes)
 app.use('/api/moves',             movesRoutes)
 app.use('/api/abilities',         abilitiesRoutes)
@@ -59,6 +68,7 @@ app.use('/api/natures',           naturesRoutes)
 app.use('/api/origins',           originsRoutes)
 app.use('/api/weapon-properties', weaponPropertiesRoutes)
 app.use('/api/weapon-types',      weaponTypesRoutes)
+app.use('/api/partida',           partidaRoutes)
 
 // 404
 app.use((_req, res) => {
