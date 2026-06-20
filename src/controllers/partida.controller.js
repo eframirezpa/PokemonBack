@@ -1,6 +1,6 @@
-const fs   = require('fs')
-const path = require('path')
-const svc  = require('../services/partida.service')
+const path    = require('path')
+const svc     = require('../services/partida.service')
+const storage = require('../services/storage.service')
 
 const getMisPartidas = async (req, res, next) => {
   try {
@@ -31,18 +31,15 @@ const create = async (req, res, next) => {
       owner_id: req.user.user_id,
     })
 
-    const id = partida.id_partida
-    const dir = path.join(__dirname, '../../public/partida', String(id))
-    fs.mkdirSync(dir, { recursive: true })
-
+    const id      = partida.id_partida
     const sprites = {}
+
     for (const key of ['sprite1', 'sprite2', 'sprite3']) {
       const file = req.files?.[key]?.[0]
       if (file) {
-        const ext      = path.extname(file.originalname) || '.png'
-        const filename = `${key}${ext}`
-        fs.writeFileSync(path.join(dir, filename), file.buffer)
-        sprites[key] = `/partida/${id}/${filename}`
+        const ext        = path.extname(file.originalname) || '.jpg'
+        const remotePath = `partida/${id}/${key}${ext}`
+        sprites[key]     = await storage.uploadSprite(file.buffer, remotePath, file.mimetype)
       }
     }
 
@@ -65,9 +62,6 @@ const update = async (req, res, next) => {
     if (!partida) return res.status(404).json({ error: 'Partida no encontrada' })
 
     if (req.files && Object.keys(req.files).length > 0) {
-      const dir = path.join(__dirname, '../../public/partida', String(id))
-      fs.mkdirSync(dir, { recursive: true })
-
       const sprites = {
         sprite1: partida.sprite1_partida,
         sprite2: partida.sprite2_partida,
@@ -77,10 +71,9 @@ const update = async (req, res, next) => {
       for (const key of ['sprite1', 'sprite2', 'sprite3']) {
         const file = req.files?.[key]?.[0]
         if (file) {
-          const ext      = path.extname(file.originalname) || '.png'
-          const filename = `${key}${ext}`
-          fs.writeFileSync(path.join(dir, filename), file.buffer)
-          sprites[key] = `/partida/${id}/${filename}`
+          const ext        = path.extname(file.originalname) || '.jpg'
+          const remotePath = `partida/${id}/${key}${ext}`
+          sprites[key]     = await storage.uploadSprite(file.buffer, remotePath, file.mimetype)
         }
       }
 
