@@ -47,4 +47,13 @@ const remove = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { getAll, getById, create, update, remove }
+const updateMyAvatar = async (req, res, next) => {
+  try {
+    const { avatar_id } = req.body
+    const data = await svc.update(req.user.user_id, { avatar_id })
+    if (!data) return res.status(404).json({ error: 'Usuario no encontrado' })
+    res.json(data)
+  } catch (e) { next(e) }
+}
+
+module.exports = { getAll, getById, create, update, remove, updateMyAvatar }
