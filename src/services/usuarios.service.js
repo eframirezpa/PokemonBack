@@ -26,10 +26,12 @@ const findById = async (id) => {
 }
 
 const findByUsername = async (user_name) => {
+  const TA = `"${SCHEMA}"."avatar"`
   const { rows } = await query(
-    `SELECT u.*, r.role_name
+    `SELECT u.*, r.role_name, a.avatar_sprite_face
      FROM ${T} u
      JOIN ${TR} r ON r.role_id = u.role_id
+     LEFT JOIN ${TA} a ON a.avatar_id = u.avatar_id
      WHERE u.user_name = $1`,
     [user_name]
   )
