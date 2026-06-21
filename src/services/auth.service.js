@@ -18,7 +18,7 @@ const login = async ({ user_name, user_password }) => {
     role:      user.role_name,
   }
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES })
-  return { token, user: payload }
+  return { token, user: { ...payload, avatar_id: user.avatar_id || null } }
 }
 
 module.exports = { login }

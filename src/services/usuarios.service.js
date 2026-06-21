@@ -6,7 +6,7 @@ const SALT_ROUNDS = 10
 
 const findAll = async () => {
   const { rows } = await query(
-    `SELECT u.user_id, u.user_name, u.role_id, r.role_name, u.created_at, u.updated_at
+    `SELECT u.user_id, u.user_name, u.role_id, r.role_name, u.avatar_id, u.created_at, u.updated_at
      FROM ${T} u
      JOIN ${TR} r ON r.role_id = u.role_id
      ORDER BY u.user_id`
@@ -16,7 +16,7 @@ const findAll = async () => {
 
 const findById = async (id) => {
   const { rows } = await query(
-    `SELECT u.user_id, u.user_name, u.role_id, r.role_name, u.created_at, u.updated_at
+    `SELECT u.user_id, u.user_name, u.role_id, r.role_name, u.avatar_id, u.created_at, u.updated_at
      FROM ${T} u
      JOIN ${TR} r ON r.role_id = u.role_id
      WHERE u.user_id = $1`,
@@ -36,18 +36,18 @@ const findByUsername = async (user_name) => {
   return rows[0] || null
 }
 
-const create = async ({ user_name, user_password, role_id }) => {
+const create = async ({ user_name, user_password, role_id, avatar_id }) => {
   const hashed = await bcrypt.hash(user_password, SALT_ROUNDS)
   const { rows } = await query(
-    `INSERT INTO ${T} (user_name, user_password, role_id)
-     VALUES ($1, $2, $3)
-     RETURNING user_id, user_name, role_id, created_at`,
-    [user_name, hashed, role_id]
+    `INSERT INTO ${T} (user_name, user_password, role_id, avatar_id)
+     VALUES ($1, $2, $3, $4)
+     RETURNING user_id, user_name, role_id, avatar_id, created_at`,
+    [user_name, hashed, role_id, avatar_id || null]
   )
   return rows[0]
 }
 
-const update = async (id, { user_name, user_password, role_id }) => {
+const update = async (id, { user_name, user_password, role_id, avatar_id }) => {
   const fields = []
   const params = []
 
@@ -64,6 +64,10 @@ const update = async (id, { user_name, user_password, role_id }) => {
     params.push(role_id)
     fields.push(`role_id = $${params.length}`)
   }
+  if (avatar_id !== undefined) {
+    params.push(avatar_id || null)
+    fields.push(`avatar_id = $${params.length}`)
+  }
 
   if (!fields.length) return findById(id)
 
@@ -72,7 +76,7 @@ const update = async (id, { user_name, user_password, role_id }) => {
 
   const { rows } = await query(
     `UPDATE ${T} SET ${fields.join(', ')} WHERE user_id = $${params.length}
-     RETURNING user_id, user_name, role_id, updated_at`,
+     RETURNING user_id, user_name, role_id, avatar_id, updated_at`,
     params
   )
   return rows[0] || null
