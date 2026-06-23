@@ -23,6 +23,7 @@ const weaponPropertiesRoutes = require('./routes/weapon_properties.routes')
 const weaponTypesRoutes      = require('./routes/weapon_types.routes')
 const partidaRoutes          = require('./routes/partida.routes')
 const avatarRoutes           = require('./routes/avatar.routes')
+const personajeRoutes        = require('./routes/personaje.routes')
 
 const app = express()
 
@@ -71,6 +72,7 @@ app.use('/api/weapon-properties', weaponPropertiesRoutes)
 app.use('/api/weapon-types',      weaponTypesRoutes)
 app.use('/api/partida',           partidaRoutes)
 app.use('/api/avatar',            avatarRoutes)
+app.use('/api/personaje',         personajeRoutes)
 
 // 404
 app.use((_req, res) => {
