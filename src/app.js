@@ -26,6 +26,7 @@ const avatarRoutes           = require('./routes/avatar.routes')
 const personajeRoutes        = require('./routes/personaje.routes')
 const featsBonusRoutes       = require('./routes/feats_bonus.routes')
 const skillsRoutes           = require('./routes/skills.routes')
+const personajeDetailsRoutes = require('./routes/personaje_details.routes')
 
 const app = express()
 
@@ -77,6 +78,7 @@ app.use('/api/avatar',            avatarRoutes)
 app.use('/api/personaje',         personajeRoutes)
 app.use('/api/feats-bonus',       featsBonusRoutes)
 app.use('/api/skills',            skillsRoutes)
+app.use('/api/personaje-details', personajeDetailsRoutes)
 
 // 404
 app.use((_req, res) => {
