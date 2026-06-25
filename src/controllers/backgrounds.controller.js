@@ -15,4 +15,10 @@ const getById = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { getAll, getById }
+const getForCharacterCreation = async (_req, res, next) => {
+  try {
+    res.json(await svc.findForCharacterCreation())
+  } catch (e) { next(e) }
+}
+
+module.exports = { getAll, getById, getForCharacterCreation }

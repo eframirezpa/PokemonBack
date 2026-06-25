@@ -1,6 +1,7 @@
 const { query, SCHEMA } = require('../config/db')
-const T  = `"${SCHEMA}"."origins"`
-const TF = `"${SCHEMA}"."feats"`
+const T   = `"${SCHEMA}"."origins"`
+const TF  = `"${SCHEMA}"."feats"`
+const TFB = `"${SCHEMA}"."feats_bonus"`
 
 const findAll = async ({ limit = 100, offset = 0, search = '' }) => {
   const params = []
@@ -57,6 +58,7 @@ const findForCharacterCreation = async () => {
             )
         END AS origin_ability_scores_instruction,
         o.origin_skill_proficiencies_name,
+        o.origin_skill_proficiencies_value_1,
         CONCAT(
             COALESCE(o.origin_skill_proficiencies_description, ''),
             ' Thanks to ',
@@ -66,7 +68,15 @@ const findForCharacterCreation = async () => {
             '.'
         ) AS origin_skill_proficiencies_instruction,
         o.origin_feat_name,
-        CONCAT('Thanks to ', o.origin_feat_name, ', ', f.feat_benefits) AS origin_feat_benefits
+        CONCAT('Thanks to ', o.origin_feat_name, ', ', f.feat_benefits) AS origin_feat_benefits,
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'type',  fb.feats_bonus_type,
+            'llave', fb.feats_bonus_llave,
+            'valor', fb.feats_bonus_valor
+          ))
+          FROM ${TFB} fb WHERE fb.id_feat = o.origin_feat_id
+        ), '[]') AS feat_bonuses
      FROM ${T} o
      LEFT JOIN ${TF} f ON f.feat_id = o.origin_feat_id
      ORDER BY o.origin_name`
