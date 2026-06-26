@@ -30,4 +30,24 @@ async function query(text, params = []) {
   }
 }
 
-module.exports = { query, SCHEMA }
+/**
+ * Ejecuta un callback dentro de una transacción.
+ * El callback recibe un client con .query(); se hace COMMIT al terminar
+ * o ROLLBACK si lanza una excepción.
+ */
+async function transaction(callback) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await callback(client)
+    await client.query('COMMIT')
+    return result
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
+  }
+}
+
+module.exports = { query, transaction, SCHEMA }

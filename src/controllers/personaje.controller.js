@@ -17,6 +17,14 @@ const getById = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+const getFull = async (req, res, next) => {
+  try {
+    const data = await svc.findFullById(req.params.id)
+    if (!data) return res.status(404).json({ error: 'Personaje no encontrado' })
+    res.json(data)
+  } catch (e) { next(e) }
+}
+
 // POST /api/personaje  { id_partida, nombre_personaje, personaje_origin, ... }
 const create = async (req, res, next) => {
   try {
@@ -28,4 +36,4 @@ const create = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { getMine, getById, create }
+module.exports = { getMine, getById, getFull, create }
