@@ -78,9 +78,9 @@ const updatePokemonEnEquipo = async (req, res, next) => {
 
 const addPokemon = async (req, res, next) => {
   try {
-    const { id_pokemon, apodo, genero, id_nature, id_bond, move_ids } = req.body
+    const { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie } = req.body
     if (!id_pokemon) return res.status(400).json({ error: 'id_pokemon requerido' })
-    const created = await svc.addPokemon(req.params.id, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids })
+    const created = await svc.addPokemon(req.params.id, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie })
     if (!created) return res.status(404).json({ error: 'Pokémon no encontrado' })
     res.status(201).json(created)
   } catch (e) { next(e) }
