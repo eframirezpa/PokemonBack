@@ -48,6 +48,44 @@ const updateArmorInUse = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+const getPokemon = async (req, res, next) => {
+  try {
+    const { en_equipo } = req.query
+    const filtro = en_equipo === undefined ? null
+      : (en_equipo === '1' || en_equipo === 'true')
+    res.json(await svc.findPokemon(req.params.id, filtro))
+  } catch (e) { next(e) }
+}
+
+const getPokemonDetail = async (req, res, next) => {
+  try {
+    const data = await svc.findPokemonDetail(req.params.idpp)
+    if (!data) return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json(data)
+  } catch (e) { next(e) }
+}
+
+const updatePokemonEnEquipo = async (req, res, next) => {
+  try {
+    const result = await svc.setPokemonEnEquipo(req.params.id, req.params.idpp, !!req.body.en_equipo)
+    if (result && result.full) {
+      return res.status(409).json({ error: 'El cinturón ya tiene 6 Pokémon' })
+    }
+    if (!result) return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json(result)
+  } catch (e) { next(e) }
+}
+
+const addPokemon = async (req, res, next) => {
+  try {
+    const { id_pokemon, apodo, genero, id_nature, id_bond, move_ids } = req.body
+    if (!id_pokemon) return res.status(400).json({ error: 'id_pokemon requerido' })
+    const created = await svc.addPokemon(req.params.id, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids })
+    if (!created) return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.status(201).json(created)
+  } catch (e) { next(e) }
+}
+
 const getWeapon = async (req, res, next) => {
   try { res.json(await svc.findWeapon(req.params.id)) } catch (e) { next(e) }
 }
@@ -97,5 +135,6 @@ module.exports = {
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
+  getPokemon, getPokemonDetail, updatePokemonEnEquipo, addPokemon,
   create,
 }

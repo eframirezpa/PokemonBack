@@ -2,8 +2,8 @@ const svc = require('../services/pokemon.service')
 
 const getAll = async (req, res, next) => {
   try {
-    const { limit = 20, offset = 0, search = '', type = '' } = req.query
-    const result = await svc.findAll({ limit: Number(limit), offset: Number(offset), search, type })
+    const { limit = 20, offset = 0, search = '', type = '', starter = '' } = req.query
+    const result = await svc.findAll({ limit: Number(limit), offset: Number(offset), search, type, starter: starter === '1' || starter === 'true' })
     res.json(result)
   } catch (e) { next(e) }
 }

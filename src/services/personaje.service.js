@@ -6,10 +6,17 @@ const TEQ = `"${SCHEMA}"."personaje_equipo"`
 const TD  = `"${SCHEMA}"."personaje_details"`
 const TAR = `"${SCHEMA}"."personaje_armor"`
 const TW  = `"${SCHEMA}"."personaje_weapon"`
+const TPP = `"${SCHEMA}"."personaje_pokemon"`
 const TSKILLS = `"${SCHEMA}"."skills"`
 const TARMOR  = `"${SCHEMA}"."armor_types"`
 const TWEAPON = `"${SCHEMA}"."weapon_types"`
+const TPOKEDEX = `"${SCHEMA}"."pokemon"`
 const TUP = `"${SCHEMA}"."usuarios_partida"`
+const TPPM = `"${SCHEMA}"."personaje_pokemon_moves"`
+const TPS  = `"${SCHEMA}"."pokemon_stats"`
+const TPSK = `"${SCHEMA}"."pokemon_skills"`
+const TNAT = `"${SCHEMA}"."natures"`
+const TMOVES = `"${SCHEMA}"."moves"`
 
 // Devuelve el id_usuarios_partida de la participación (user + partida)
 const getParticipacion = async (id_partida, user_id) => {
@@ -104,6 +111,77 @@ const setArmorInUse = async (id_personaje, id_personaje_armor, in_use) => {
     await client.query(`UPDATE ${T} SET personaje_ac = $1 WHERE id_personaje = $2`, [ac, id_personaje])
     return { id_personaje_armor, personaje_armor_in_use: in_use, personaje_ac: ac }
   })
+}
+
+// ── Pokémon del personaje ────────────────────────────────────────
+const findPokemon = async (id_personaje, enEquipo = null) => {
+  const params = [id_personaje]
+  let cond = ''
+  if (enEquipo !== null) { params.push(enEquipo); cond = ` AND pp.pokemon_en_equipo = $${params.length}` }
+  const { rows } = await query(
+    `SELECT pp.id_personaje_pokemon, pp.id_pokemon, pp.pokemon_apodo, pp.pokemon_level, pp.pokemon_en_equipo,
+            pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_main
+     FROM ${TPP} pp
+     JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
+     WHERE pp.id_personaje = $1${cond}
+     ORDER BY pp.id_personaje_pokemon`,
+    params
+  )
+  return rows
+}
+
+// Detalle completo de un Pokémon del personaje (tipo pokédex, con datos persistidos)
+const findPokemonDetail = async (id_personaje_pokemon) => {
+  const { rows } = await query(
+    `SELECT pp.*, pk.pokemon_name, pk.pokemon_type_1, pk.pokemon_type_2,
+            pk.pokemon_media_main, pk.pokemon_media_main_shiny, pk.pokemon_media_sprite,
+            n.nature_name, n.nature_effect_increase, n.nature_effect_increase_value,
+            n.nature_effect_decrease, n.nature_effect_decrease_value
+     FROM ${TPP} pp
+     JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
+     LEFT JOIN ${TNAT} n ON n.nature_id = pp.personaje_pokemon_nature
+     WHERE pp.id_personaje_pokemon = $1`,
+    [id_personaje_pokemon]
+  )
+  const pp = rows[0]
+  if (!pp) return null
+
+  const { rows: statsRows } = await query(
+    `SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon]
+  )
+  const { rows: skills } = await query(
+    `SELECT s.skill_name, s.skill_related_ability, ps.pokemon_skill_pref, ps.pokemon_skill_expert
+     FROM ${TPSK} ps JOIN ${TSKILLS} s ON s.skill_id = ps.id_skill
+     WHERE ps.id_personaje_pokemon = $1
+     ORDER BY ps.id_pokemon_skills`,
+    [id_personaje_pokemon]
+  )
+  const { rows: moves } = await query(
+    `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range
+     FROM ${TPPM} pm JOIN ${TMOVES} m ON m.move_id = pm.personaje_pokemon_moves_move_id
+     WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1
+     ORDER BY pm.personaje_pokemon_moves_id`,
+    [id_personaje_pokemon]
+  )
+  return { ...pp, stats: statsRows[0] || null, skills, moves }
+}
+
+// Marca/desmarca un Pokémon como "en el cinturón". Máximo 6 en el cinturón.
+const setPokemonEnEquipo = async (id_personaje, id_personaje_pokemon, enEquipo) => {
+  if (enEquipo) {
+    const { rows } = await query(
+      `SELECT COUNT(*)::int AS c FROM ${TPP} WHERE id_personaje = $1 AND pokemon_en_equipo = true`,
+      [id_personaje]
+    )
+    if (rows[0].c >= 6) return { full: true }
+  }
+  const { rows } = await query(
+    `UPDATE ${TPP} SET pokemon_en_equipo = $1
+     WHERE id_personaje_pokemon = $2 AND id_personaje = $3
+     RETURNING *`,
+    [enEquipo, id_personaje_pokemon, id_personaje]
+  )
+  return rows[0] || null
 }
 
 // ── Armas del personaje ──────────────────────────────────────────
@@ -395,10 +473,113 @@ const create = async (id_partida, user_id, data) => {
   })
 }
 
+// Agrega un Pokémon (especie de la pokédex) a un personaje, con sus stats,
+// skills y movimientos. Deriva la mayor parte de los datos desde la pokédex.
+const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids }) => {
+  const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [id_pokemon])
+  const pk = pkRows[0]
+  if (!pk) return null
+
+  // Ajuste de naturaleza: +valor a la ability que sube, valor (negativo) a la que baja
+  const natureAdj = { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 }
+  const id_nat = id_nature != null ? Number(id_nature) : null
+  if (id_nat != null) {
+    const { rows: nRows } = await query(`SELECT * FROM ${TNAT} WHERE nature_id = $1`, [id_nat])
+    const n = nRows[0]
+    if (n) {
+      const inc = norm(n.nature_effect_increase), dec = norm(n.nature_effect_decrease)
+      if (natureAdj[inc] !== undefined) natureAdj[inc] += Number(n.nature_effect_increase_value) || 0
+      if (natureAdj[dec] !== undefined) natureAdj[dec] += Number(n.nature_effect_decrease_value) || 0
+    }
+  }
+
+  const generoText = genero === 'F' ? 'Female' : genero === 'M' ? 'Male' : 'Sin género'
+  const hp = Number(pk.pokemon_hit_points) || 0
+  const hitDice = `1${pk.pokemon_hit_dice || ''}`               // ej. "1d6"
+  const bond = id_bond ? Number(id_bond) : null                 // 0/undefined → null (FK)
+  const splitLower = s => (s || '').split(',').map(norm).filter(Boolean)
+  const savingSet = new Set(splitLower(pk.pokemon_saving_throws))
+
+  return transaction(async (client) => {
+    // ── 1. personaje_pokemon ──────────────────────────────────────
+    const { rows: ppRows } = await client.query(
+      `INSERT INTO ${TPP} (
+         id_personaje, id_pokemon, pokemon_apodo, pokemon_hp, pokemon_current_hp,
+         pokemon_en_equipo, pokemon_proficient, pokemon_initiative, pokemon_level,
+         pokemon_hit_dice, pokemon_saving_throw_prof, pokemon_hit_dice_left,
+         personaje_pokemon_ac, personaje_pokemon_nature, personaje_pokemon_stab, personaje_pokemon_bond,
+         personaje_pokemon_speed1_name, personaje_pokemon_speed1_value,
+         personaje_pokemon_speed2_name, personaje_pokemon_speed2_value,
+         personaje_pokemon_speed3_name, personaje_pokemon_speed3_value,
+         personaje_pokemon_speed4_name, personaje_pokemon_speed4_value,
+         personaje_pokemon_genero
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+       RETURNING *`,
+      [
+        id_personaje, id_pokemon, apodo ?? pk.pokemon_name, hp, hp,
+        true, 2, 3, 1,
+        hitDice, pk.pokemon_saving_throws ?? null, '1/1',
+        pk.pokemon_armor_class != null ? Number(pk.pokemon_armor_class) : null,
+        id_nat, 2, bond,
+        pk.pokemon_speed_1_name ?? null, pk.pokemon_speed_1_value ?? null,
+        pk.pokemon_speed_2_name ?? null, pk.pokemon_speed_2_value ?? null,
+        pk.pokemon_speed_3_name ?? null, pk.pokemon_speed_3_value ?? null,
+        pk.pokemon_speed_4_name ?? null, pk.pokemon_speed_4_value ?? null,
+        generoText,
+      ]
+    )
+    const pp = ppRows[0]
+    const id_pp = pp.id_personaje_pokemon
+
+    // ── 2. pokemon_stats (base = pokédex, bonus = naturaleza) ─────
+    const base = k => Number(pk[`pokemon_${k}`]) || 0
+    await client.query(
+      `INSERT INTO ${TPS} (
+         id_personaje_pokemon,
+         pokemon_dex, pokemon_str, pokemon_con, pokemon_int, pokemon_wis, pokemon_cha,
+         pokemon_dex_bonus, pokemon_str_bonus, pokemon_con_bonus, pokemon_int_bonus, pokemon_wis_bonus, pokemon_cha_bonus,
+         pokemon_stats_dex_prof, pokemon_stats_str_prof, pokemon_stats_con_prof,
+         pokemon_stats_int_prof, pokemon_stats_wis_prof, pokemon_stats_cha_prof
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+      [
+        id_pp,
+        base('dex'), base('str'), base('con'), base('int'), base('wis'), base('cha'),
+        natureAdj.dex, natureAdj.str, natureAdj.con, natureAdj.int, natureAdj.wis, natureAdj.cha,
+        savingSet.has('dex'), savingSet.has('str'), savingSet.has('con'),
+        savingSet.has('int'), savingSet.has('wis'), savingSet.has('cha'),
+      ]
+    )
+
+    // ── 3. pokemon_skills (todas; pref = las proficientes de la pokédex) ──
+    const { rows: skills } = await client.query(`SELECT skill_id, skill_name FROM ${TSKILLS}`)
+    const profSet = new Set(splitLower(pk.pokemon_proficient_skills))
+    for (const sk of skills) {
+      await client.query(
+        `INSERT INTO ${TPSK} (id_personaje_pokemon, id_skill, pokemon_skill_pref, pokemon_skill_expert)
+         VALUES ($1,$2,$3,false)`,
+        [id_pp, sk.skill_id, profSet.has(norm(sk.skill_name))]
+      )
+    }
+
+    // ── 4. personaje_pokemon_moves ────────────────────────────────
+    const uniqMoves = [...new Set((move_ids || []).map(Number).filter(Boolean))]
+    for (const mid of uniqMoves) {
+      await client.query(
+        `INSERT INTO ${TPPM} (personaje_pokemon_moves_move_id, personaje_pokemon_moves_personaje_pokemon_id)
+         VALUES ($1,$2)`,
+        [mid, id_pp]
+      )
+    }
+
+    return pp
+  })
+}
+
 module.exports = {
   findByPartidaUser, findById, findFullById,
   findEquipo, addEquipo, updateEquipoCantidad,
   findArmor, addArmor, setArmorInUse,
   findWeapon, addWeapon, setWeaponInUse,
+  findPokemon, findPokemonDetail, setPokemonEnEquipo, addPokemon,
   create,
 }

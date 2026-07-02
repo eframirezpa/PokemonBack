@@ -1,7 +1,7 @@
 const { query, SCHEMA } = require('../config/db')
 const T = `"${SCHEMA}"."pokemon"`
 
-const findAll = async ({ limit = 20, offset = 0, search = '', type = '' }) => {
+const findAll = async ({ limit = 20, offset = 0, search = '', type = '', starter = false }) => {
   const params = []
   const conditions = []
 
@@ -12,6 +12,21 @@ const findAll = async ({ limit = 20, offset = 0, search = '', type = '' }) => {
   if (type) {
     params.push(type)
     conditions.push(`(pokemon_type_1 = $${params.length} OR pokemon_type_2 = $${params.length})`)
+  }
+  if (starter) {
+    // SR <= 0.5, nivel mínimo 1 y forma base (sin evolución previa)
+    conditions.push(`(
+      CASE
+        WHEN pokemon_sr LIKE '%/%'
+          THEN SPLIT_PART(pokemon_sr, '/', 1)::NUMERIC / SPLIT_PART(pokemon_sr, '/', 2)::NUMERIC
+        ELSE pokemon_sr::NUMERIC
+      END
+    ) <= 0.5
+    AND pokemon_min_level = 1
+    AND NOT EXISTS (
+      SELECT 1 FROM "${SCHEMA}"."evolution" e
+      WHERE e.evolution_to_pokemon_id = "${SCHEMA}"."pokemon".pokemon_id
+    )`)
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
