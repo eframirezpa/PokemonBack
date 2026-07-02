@@ -423,7 +423,7 @@ const create = async (id_partida, user_id, data) => {
         data.conexiones ?? null,
         30, // personaje_speed inicial (ft)
         '1/1', // personaje_hit_dice_left inicial
-        1, 0, 0, // personaje_exahust_lvl, personaje_dsts, personaje_dstf
+        0, 0, 0, // personaje_exahust_lvl, personaje_dsts, personaje_dstf
       ]
     )
     const personaje = pRows[0]
@@ -571,7 +571,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
         generoText, !!is_shiny,
         pk.pokemon_sense_1_name ?? null, pk.pokemon_sense_1_value ?? null,
         pk.pokemon_sense_2_name ?? null, pk.pokemon_sense_2_value ?? null,
-        1, 0, 0, // personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf
+        0, 0, 0, // personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf
       ]
     )
     const pp = ppRows[0]
