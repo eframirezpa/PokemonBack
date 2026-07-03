@@ -1,7 +1,7 @@
 const { query, SCHEMA } = require('../config/db')
 const T = `"${SCHEMA}"."items"`
 
-const findAll = async ({ limit = 20, offset = 0, search = '', type = '' }) => {
+const findAll = async ({ limit = 20, offset = 0, search = '', type = '', excludeType = '' }) => {
   const params = []
   const conditions = []
 
@@ -12,6 +12,10 @@ const findAll = async ({ limit = 20, offset = 0, search = '', type = '' }) => {
   if (type) {
     params.push(type)
     conditions.push(`item_type = $${params.length}`)
+  }
+  if (excludeType) {
+    params.push(excludeType)
+    conditions.push(`item_type <> $${params.length}`)
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
