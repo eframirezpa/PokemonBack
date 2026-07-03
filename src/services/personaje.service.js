@@ -30,6 +30,67 @@ const getParticipacion = async (id_partida, user_id) => {
   return rows[0]?.id_usuarios_partida || null
 }
 
+// Party: todos los personajes de una partida (con su user_id) + sus Pokémon del cinturón.
+// Solo lectura, para el panel "Party".
+const findParty = async (id_partida) => {
+  const { rows: chars } = await query(
+    `SELECT p.id_personaje, up.user_id, p.nombre_personaje,
+            p.personaje_hp, p.personaje_current_hp,
+            p.personaje_exahust_lvl, p.personaje_dsts, p.personaje_dstf
+     FROM ${T} p
+     JOIN ${TUP} up ON up.id_usuarios_partida = p.id_usuario_partida
+     WHERE up.id_partida = $1
+     ORDER BY p.id_personaje`,
+    [id_partida]
+  )
+  for (const c of chars) {
+    const { rows: pks } = await query(
+      `SELECT pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_hp, pp.pokemon_current_hp,
+              pp.personaje_pokemon_exahust_lvl, pp.personaje_pokemon_dsts, pp.personaje_pokemon_dstf,
+              pp.pokemon_is_shiny,
+              pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pk.pokemon_media_main
+       FROM ${TPP} pp JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
+       WHERE pp.id_personaje = $1 AND pp.pokemon_en_equipo = true
+       ORDER BY pp.id_personaje_pokemon`,
+      [c.id_personaje]
+    )
+    c.pokemons = pks.map(fixMedia)
+  }
+  return chars
+}
+
+// Actualiza campos de combate del personaje (HP actual, exhaust, dsts, dstf)
+const updateCombate = async (id_personaje, { current_hp, exhaust_lvl, dsts, dstf }) => {
+  const sets = [], params = []
+  const add = (col, val) => { if (val !== undefined && val !== null) { params.push(val); sets.push(`${col} = $${params.length}`) } }
+  add('personaje_current_hp', current_hp)
+  add('personaje_exahust_lvl', exhaust_lvl)
+  add('personaje_dsts', dsts)
+  add('personaje_dstf', dstf)
+  if (!sets.length) return null
+  params.push(id_personaje)
+  const { rows } = await query(
+    `UPDATE ${T} SET ${sets.join(', ')} WHERE id_personaje = $${params.length} RETURNING *`, params
+  )
+  return rows[0] || null
+}
+
+// Actualiza campos de combate de un Pokémon del personaje
+const updatePokemonCombate = async (id_personaje_pokemon, { current_hp, exhaust_lvl, dsts, dstf }) => {
+  const sets = [], params = []
+  const add = (col, val) => { if (val !== undefined && val !== null) { params.push(val); sets.push(`${col} = $${params.length}`) } }
+  add('pokemon_current_hp', current_hp)
+  add('personaje_pokemon_exahust_lvl', exhaust_lvl)
+  add('personaje_pokemon_dsts', dsts)
+  add('personaje_pokemon_dstf', dstf)
+  if (!sets.length) return null
+  params.push(id_personaje_pokemon)
+  const { rows } = await query(
+    `UPDATE ${TPP} SET ${sets.join(', ')} WHERE id_personaje_pokemon = $${params.length} RETURNING *`, params
+  )
+  return rows[0] || null
+}
+
 // Personajes del usuario dentro de una partida
 const findByPartidaUser = async (id_partida, user_id) => {
   const { rows } = await query(
@@ -630,7 +691,8 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
 }
 
 module.exports = {
-  findByPartidaUser, findById, findFullById,
+  findByPartidaUser, findParty, findById, findFullById,
+  updateCombate, updatePokemonCombate,
   findEquipo, addEquipo, updateEquipoCantidad,
   findArmor, addArmor, setArmorInUse,
   findWeapon, addWeapon, setWeaponInUse,

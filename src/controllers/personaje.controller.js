@@ -17,6 +17,31 @@ const getById = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /api/personaje/:id/combate → HP actual / exhaust / dsts / dstf del personaje
+const updateCombate = async (req, res, next) => {
+  try {
+    const { current_hp, exhaust_lvl, dsts, dstf } = req.body
+    res.json(await svc.updateCombate(req.params.id, { current_hp, exhaust_lvl, dsts, dstf }) || {})
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/personaje/:id/pokemon/:idpp/combate → HP actual / exhaust / dsts / dstf del pokémon
+const updatePokemonCombate = async (req, res, next) => {
+  try {
+    const { current_hp, exhaust_lvl, dsts, dstf } = req.body
+    res.json(await svc.updatePokemonCombate(req.params.idpp, { current_hp, exhaust_lvl, dsts, dstf }) || {})
+  } catch (e) { next(e) }
+}
+
+// GET /api/personaje/party?id_partida=123 → personajes de la partida + pokémon del cinturón
+const getParty = async (req, res, next) => {
+  try {
+    const id_partida = Number(req.query.id_partida)
+    if (!id_partida) return res.status(400).json({ error: 'id_partida requerido' })
+    res.json(await svc.findParty(id_partida))
+  } catch (e) { next(e) }
+}
+
 const getFull = async (req, res, next) => {
   try {
     const data = await svc.findFullById(req.params.id)
@@ -131,7 +156,7 @@ const create = async (req, res, next) => {
 }
 
 module.exports = {
-  getMine, getById, getFull,
+  getMine, getParty, getById, getFull, updateCombate, updatePokemonCombate,
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
