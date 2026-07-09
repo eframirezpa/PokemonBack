@@ -238,7 +238,12 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
     [id_personaje_pokemon]
   )
   const { rows: moves } = await query(
-    `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range
+    `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range,
+            m.move_duration, m.move_description, m.move_power_1, m.move_power_2, m.move_power_3,
+            m.move_higher_levels, m.move_optional_rules, m.move_has_damage,
+            m.move_damage_level_1, m.move_damage_level_5, m.move_damage_level_10, m.move_damage_level_17,
+            m.move_damage_modifier, m.move_damage_type, m.move_attack_scope,
+            m.move_save_attribute, m.move_save_dc, m.move_is_concentration
      FROM ${TPPM} pm JOIN ${TMOVES} m ON m.move_id = pm.personaje_pokemon_moves_move_id
      WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1
      ORDER BY pm.personaje_pokemon_moves_id`,
