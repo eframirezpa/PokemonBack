@@ -144,6 +144,35 @@ const updateEquipo = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// GET /api/personaje/:id/feats → feats extra del personaje (con detalle)
+const getFeats = async (req, res, next) => {
+  try {
+    res.json(await svc.findFeats(req.params.id))
+  } catch (e) { next(e) }
+}
+
+// POST /api/personaje/:id/feats  { feat_id } → agrega un feat (solo General)
+const addFeat = async (req, res, next) => {
+  try {
+    const feat_id = Number(req.body.feat_id)
+    if (!feat_id) return res.status(400).json({ error: 'feat_id requerido' })
+    const result = await svc.addFeat(req.params.id, feat_id)
+    if (result.error === 'notfound') return res.status(404).json({ error: 'Feat no encontrado' })
+    if (result.error === 'type')     return res.status(400).json({ error: 'Solo se pueden agregar feats de tipo General' })
+    if (result.error === 'duplicate') return res.status(409).json({ error: 'El personaje ya tiene ese rasgo' })
+    res.status(201).json(result)
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/personaje/:id/editable  { is_editable } → activa/desactiva la edición
+const setEditable = async (req, res, next) => {
+  try {
+    const data = await svc.setEditable(req.params.id, !!req.body.is_editable)
+    if (!data) return res.status(404).json({ error: 'Personaje no encontrado' })
+    res.json(data)
+  } catch (e) { next(e) }
+}
+
 // POST /api/personaje  { id_partida, nombre_personaje, personaje_origin, ... }
 const create = async (req, res, next) => {
   try {
@@ -161,5 +190,6 @@ module.exports = {
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, addPokemon,
+  getFeats, addFeat, setEditable,
   create,
 }

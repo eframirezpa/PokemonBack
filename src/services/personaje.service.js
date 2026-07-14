@@ -20,6 +20,10 @@ const TMOVES = `"${SCHEMA}"."moves"`
 const TPPP = `"${SCHEMA}"."personaje_pokemon_pasiva"`
 const TABIL = `"${SCHEMA}"."abilities"`
 const TBONDS = `"${SCHEMA}"."bonds"`
+const TPF   = `"${SCHEMA}"."personaje_feat"`
+const TFEATS = `"${SCHEMA}"."feats"`
+const TORIGINS = `"${SCHEMA}"."origins"`
+const TBACKGROUNDS = `"${SCHEMA}"."backgrounds"`
 
 // Devuelve el id_usuarios_partida de la participación (user + partida)
 const getParticipacion = async (id_partida, user_id) => {
@@ -36,7 +40,8 @@ const findParty = async (id_partida) => {
   const { rows: chars } = await query(
     `SELECT p.id_personaje, up.user_id, p.nombre_personaje,
             p.personaje_hp, p.personaje_current_hp,
-            p.personaje_exahust_lvl, p.personaje_dsts, p.personaje_dstf
+            p.personaje_exahust_lvl, p.personaje_dsts, p.personaje_dstf,
+            p.personaje_is_editable
      FROM ${T} p
      JOIN ${TUP} up ON up.id_usuarios_partida = p.id_usuario_partida
      WHERE up.id_partida = $1
@@ -391,7 +396,7 @@ const updateEquipoCantidad = async (id_personaje_equipo, cantidad) => {
 // Personaje con toda su información relacionada (para la hoja completa)
 const findFullById = async (id_personaje) => {
   const { rows: pRows } = await query(
-    `SELECT p.*, o.origin_name, b.background_name,
+    `SELECT p.*, o.origin_name, o.origin_feat_id, b.background_name, b.background_feat_id,
             b.background_tool_proficiencies_name, b.background_tool_proficiencies_values
      FROM ${T} p
      LEFT JOIN "${SCHEMA}"."origins"     o ON o.origin_id     = p.personaje_origin
@@ -401,6 +406,17 @@ const findFullById = async (id_personaje) => {
   )
   const personaje = pRows[0]
   if (!personaje) return null
+
+  // Feats asociados al origen y al background (via origin_feat_id / background_feat_id)
+  const featIds = [personaje.origin_feat_id, personaje.background_feat_id].filter(Boolean)
+  let originFeat = null, backgroundFeat = null
+  if (featIds.length) {
+    const { rows: featRows } = await query(
+      `SELECT * FROM "${SCHEMA}"."feats" WHERE feat_id = ANY($1)`, [featIds]
+    )
+    originFeat     = featRows.find(f => f.feat_id === personaje.origin_feat_id)     || null
+    backgroundFeat = featRows.find(f => f.feat_id === personaje.background_feat_id) || null
+  }
 
   const { rows: statsRows } = await query(`SELECT * FROM ${TS} WHERE id_personaje = $1`, [id_personaje])
   const { rows: skillRows } = await query(
@@ -434,16 +450,80 @@ const findFullById = async (id_personaje) => {
      ORDER BY pw.id_personaje_weapon`,
     [id_personaje]
   )
+  const { rows: extraFeatRows } = await query(
+    `SELECT pf.personaje_feat_id, f.*
+     FROM ${TPF} pf JOIN ${TFEATS} f ON f.feat_id = pf.feat_id
+     WHERE pf.personaje_id = $1
+     ORDER BY pf.personaje_feat_id`,
+    [id_personaje]
+  )
 
   return {
     ...personaje,
-    stats:   statsRows[0] || null,
-    skills:  skillRows,
-    equipo:  equipoRows,
-    details: detRows,
-    armor:   armorRows[0] || null,
-    weapons: weaponRows,
+    stats:           statsRows[0] || null,
+    skills:          skillRows,
+    equipo:          equipoRows,
+    details:         detRows,
+    armor:           armorRows[0] || null,
+    weapons:         weaponRows,
+    origin_feat:     originFeat,
+    background_feat: backgroundFeat,
+    extra_feats:     extraFeatRows,
   }
+}
+
+// ── Feats extra del personaje (personaje_feat) ───────────────────
+// Lista los feats agregados manualmente (con su detalle completo)
+const findFeats = async (id_personaje) => {
+  const { rows } = await query(
+    `SELECT pf.personaje_feat_id, f.*
+     FROM ${TPF} pf JOIN ${TFEATS} f ON f.feat_id = pf.feat_id
+     WHERE pf.personaje_id = $1
+     ORDER BY pf.personaje_feat_id`,
+    [id_personaje]
+  )
+  return rows
+}
+
+// Agrega un feat al personaje. Solo feats tipo 'General'.
+// Si no es repetible, no puede estar ya asignado (origen, background o extra).
+// Devuelve { error } o el registro creado con el detalle del feat.
+const addFeat = async (id_personaje, feat_id) => {
+  const { rows: fRows } = await query(`SELECT * FROM ${TFEATS} WHERE feat_id = $1`, [feat_id])
+  const feat = fRows[0]
+  if (!feat) return { error: 'notfound' }
+  if (feat.feat_type !== 'General') return { error: 'type' }
+
+  if (Number(feat.feat_is_repeatable) !== 1) {
+    const { rows: dup } = await query(
+      `SELECT 1 FROM ${TPF} WHERE personaje_id = $1 AND feat_id = $2
+       UNION
+       SELECT 1 FROM ${T} p
+         LEFT JOIN ${TORIGINS}     o ON o.origin_id     = p.personaje_origin
+         LEFT JOIN ${TBACKGROUNDS} b ON b.background_id = p.personaje_background
+        WHERE p.id_personaje = $1 AND (o.origin_feat_id = $2 OR b.background_feat_id = $2)
+       LIMIT 1`,
+      [id_personaje, feat_id]
+    )
+    if (dup.length) return { error: 'duplicate' }
+  }
+
+  const { rows } = await query(
+    `INSERT INTO ${TPF} (personaje_id, feat_id) VALUES ($1, $2)
+     RETURNING personaje_feat_id`,
+    [id_personaje, feat_id]
+  )
+  return { personaje_feat_id: rows[0].personaje_feat_id, ...feat }
+}
+
+// Activa/desactiva la edición del personaje (personaje_is_editable)
+const setEditable = async (id_personaje, is_editable) => {
+  const { rows } = await query(
+    `UPDATE ${T} SET personaje_is_editable = $1 WHERE id_personaje = $2
+     RETURNING id_personaje, personaje_is_editable`,
+    [!!is_editable, id_personaje]
+  )
+  return rows[0] || null
 }
 
 /**
@@ -702,5 +782,6 @@ module.exports = {
   findArmor, addArmor, setArmorInUse,
   findWeapon, addWeapon, setWeaponInUse,
   findPokemon, findPokemonDetail, setPokemonEnEquipo, addPokemon,
+  findFeats, addFeat, setEditable,
   create,
 }
