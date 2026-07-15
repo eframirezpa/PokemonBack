@@ -21,7 +21,46 @@ const TPPP = `"${SCHEMA}"."personaje_pokemon_pasiva"`
 const TABIL = `"${SCHEMA}"."abilities"`
 const TBONDS = `"${SCHEMA}"."bonds"`
 const TPF   = `"${SCHEMA}"."personaje_feat"`
+const TPFB  = `"${SCHEMA}"."personaje_feat_bonus"`
+const TFB   = `"${SCHEMA}"."feats_bonus"`
 const TFEATS = `"${SCHEMA}"."feats"`
+
+// Stats válidos para los bonos de tipo 'stat'
+const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
+
+// Analiza un feat_bonus de tipo 'stat'. Devuelve null si no es stat.
+// modes: 'fixed' (llave fija), 'single' (elegir 1 entre options), 'distribute' (repartir puntos según patterns)
+const analyzeStatBonus = (b) => {
+  if ((b.type || '').toLowerCase() !== 'stat') return null
+  const llave = (b.llave || '').toLowerCase().trim()
+  const valor = (b.valor || '').trim()
+
+  if (llave === 'any') {
+    if (/or/i.test(valor)) {
+      const patterns = valor.split(/or/i)
+        .map(p => p.trim().split(',').map(n => parseInt(n, 10)).filter(n => !isNaN(n)).sort((a, c) => c - a))
+        .filter(p => p.length)
+      const total  = patterns[0] ? patterns[0].reduce((a, c) => a + c, 0) : 0
+      const maxPer = patterns.length ? Math.max(...patterns.flat()) : 0
+      return { mode: 'distribute', options: STAT_KEYS, patterns, total, maxPer }
+    }
+    return { mode: 'single', options: STAT_KEYS, value: parseInt(valor, 10) || 0 }
+  }
+  if (/or/i.test(llave)) {
+    const options = llave.split(/or/i).map(s => s.trim()).filter(s => STAT_KEYS.includes(s))
+    return { mode: 'single', options, value: parseInt(valor, 10) || 0 }
+  }
+  if (STAT_KEYS.includes(llave)) {
+    return { mode: 'fixed', llave, value: parseInt(valor, 10) || 0 }
+  }
+  return null
+}
+
+// ¿La distribución elegida (valores) coincide con alguno de los patterns?
+const matchesPattern = (values, patterns) => {
+  const chosen = values.filter(v => v > 0).sort((a, c) => c - a)
+  return patterns.some(p => p.length === chosen.length && p.every((v, i) => v === chosen[i]))
+}
 const TORIGINS = `"${SCHEMA}"."origins"`
 const TBACKGROUNDS = `"${SCHEMA}"."backgrounds"`
 
@@ -451,7 +490,15 @@ const findFullById = async (id_personaje) => {
     [id_personaje]
   )
   const { rows: extraFeatRows } = await query(
-    `SELECT pf.personaje_feat_id, f.*
+    `SELECT pf.personaje_feat_id, f.*,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'type',  pfb.personaje_feat_bonus_type,
+                'llave', pfb.personaje_feat_bonus_llave,
+                'value', pfb.personaje_feat_bonus_value
+              ) ORDER BY pfb.personaje_feat_bonus_id)
+              FROM ${TPFB} pfb WHERE pfb.personaje_feat_bonus_personaje_feat_id = pf.personaje_feat_id
+            ), '[]') AS bonos
      FROM ${TPF} pf JOIN ${TFEATS} f ON f.feat_id = pf.feat_id
      WHERE pf.personaje_id = $1
      ORDER BY pf.personaje_feat_id`,
@@ -485,14 +532,17 @@ const findFeats = async (id_personaje) => {
   return rows
 }
 
-// Agrega un feat al personaje. Solo feats tipo 'General'.
+// Agrega un feat al personaje. Solo feats tipo 'General' u 'Origin'.
 // Si no es repetible, no puede estar ya asignado (origen, background o extra).
-// Devuelve { error } o el registro creado con el detalle del feat.
-const addFeat = async (id_personaje, feat_id) => {
+// Resuelve los feat_bonus y los guarda en personaje_feat_bonus (una fila por bono resuelto):
+//   - stat fijo / healing / otros → se copian tal cual
+//   - stat 'any' o 'x or y' → se resuelven con las elecciones del jugador (choices por índice)
+// NO modifica personaje_stats. Devuelve { error } o el registro creado con el detalle del feat.
+const addFeat = async (id_personaje, feat_id, choices = {}) => {
   const { rows: fRows } = await query(`SELECT * FROM ${TFEATS} WHERE feat_id = $1`, [feat_id])
   const feat = fRows[0]
   if (!feat) return { error: 'notfound' }
-  if (feat.feat_type !== 'General') return { error: 'type' }
+  if (!['General', 'Origin'].includes(feat.feat_type)) return { error: 'type' }
 
   if (Number(feat.feat_is_repeatable) !== 1) {
     const { rows: dup } = await query(
@@ -508,12 +558,63 @@ const addFeat = async (id_personaje, feat_id) => {
     if (dup.length) return { error: 'duplicate' }
   }
 
-  const { rows } = await query(
-    `INSERT INTO ${TPF} (personaje_id, feat_id) VALUES ($1, $2)
-     RETURNING personaje_feat_id`,
-    [id_personaje, feat_id]
+  // Bonos del feat → filas resueltas para personaje_feat_bonus
+  const { rows: bonuses } = await query(
+    `SELECT feats_bonus_type AS type, feats_bonus_llave AS llave, feats_bonus_valor AS valor
+     FROM ${TFB} WHERE id_feat = $1 ORDER BY id_feats_bonus`,
+    [feat_id]
   )
-  return { personaje_feat_id: rows[0].personaje_feat_id, ...feat }
+  const rowsToInsert = []
+  for (let i = 0; i < bonuses.length; i++) {
+    const b  = bonuses[i]
+    const st = analyzeStatBonus(b)
+    if (!st) { // healing / skill / otros → copiar tal cual
+      rowsToInsert.push({ type: b.type, llave: b.llave, value: b.valor })
+      continue
+    }
+    if (st.mode === 'fixed') {
+      rowsToInsert.push({ type: 'stat', llave: st.llave, value: String(st.value) })
+      continue
+    }
+    // single o distribute → requiere elección del jugador
+    const chosen = choices[String(i)] ?? choices[i]
+    if (!Array.isArray(chosen) || chosen.length === 0) return { error: 'choices' }
+    const picks = chosen.map(c => ({ llave: (c.llave || '').toLowerCase(), value: parseInt(c.value, 10) || 0 }))
+    if (picks.some(p => !st.options.includes(p.llave))) return { error: 'choices' }
+    if (new Set(picks.map(p => p.llave)).size !== picks.length) return { error: 'choices' }
+    if (st.mode === 'single') {
+      if (picks.length !== 1 || picks[0].value !== st.value) return { error: 'choices' }
+    } else { // distribute
+      if (!matchesPattern(picks.map(p => p.value), st.patterns)) return { error: 'choices' }
+    }
+    for (const p of picks) rowsToInsert.push({ type: 'stat', llave: p.llave, value: String(p.value) })
+  }
+
+  return transaction(async (client) => {
+    const { rows } = await client.query(
+      `INSERT INTO ${TPF} (personaje_id, feat_id) VALUES ($1, $2) RETURNING personaje_feat_id`,
+      [id_personaje, feat_id]
+    )
+    const pfId = rows[0].personaje_feat_id
+    for (const r of rowsToInsert) {
+      await client.query(
+        `INSERT INTO ${TPFB}
+           (personaje_feat_bonus_personaje_feat_id, personaje_feat_bonus_type, personaje_feat_bonus_llave, personaje_feat_bonus_value)
+         VALUES ($1, $2, $3, $4)`,
+        [pfId, r.type ?? null, r.llave ?? null, r.value ?? null]
+      )
+    }
+    return { personaje_feat_id: pfId, bonos: rowsToInsert, ...feat }
+  })
+}
+
+// Elimina un feat extra del personaje (personaje_feat). Devuelve true si se borró.
+const removeFeat = async (id_personaje, personaje_feat_id) => {
+  const { rowCount } = await query(
+    `DELETE FROM ${TPF} WHERE personaje_feat_id = $1 AND personaje_id = $2`,
+    [personaje_feat_id, id_personaje]
+  )
+  return rowCount > 0
 }
 
 // Activa/desactiva la edición del personaje (personaje_is_editable)
@@ -782,6 +883,6 @@ module.exports = {
   findArmor, addArmor, setArmorInUse,
   findWeapon, addWeapon, setWeaponInUse,
   findPokemon, findPokemonDetail, setPokemonEnEquipo, addPokemon,
-  findFeats, addFeat, setEditable,
+  findFeats, addFeat, removeFeat, setEditable,
   create,
 }

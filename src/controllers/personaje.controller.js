@@ -156,11 +156,21 @@ const addFeat = async (req, res, next) => {
   try {
     const feat_id = Number(req.body.feat_id)
     if (!feat_id) return res.status(400).json({ error: 'feat_id requerido' })
-    const result = await svc.addFeat(req.params.id, feat_id)
+    const result = await svc.addFeat(req.params.id, feat_id, req.body.choices)
     if (result.error === 'notfound') return res.status(404).json({ error: 'Feat no encontrado' })
-    if (result.error === 'type')     return res.status(400).json({ error: 'Solo se pueden agregar feats de tipo General' })
+    if (result.error === 'type')     return res.status(400).json({ error: 'Solo se pueden agregar feats de tipo General u Origin' })
     if (result.error === 'duplicate') return res.status(409).json({ error: 'El personaje ya tiene ese rasgo' })
+    if (result.error === 'choices')   return res.status(400).json({ error: 'Debes elegir los atributos del rasgo' })
     res.status(201).json(result)
+  } catch (e) { next(e) }
+}
+
+// DELETE /api/personaje/:id/feats/:idpf → elimina un feat extra del personaje
+const removeFeat = async (req, res, next) => {
+  try {
+    const ok = await svc.removeFeat(req.params.id, req.params.idpf)
+    if (!ok) return res.status(404).json({ error: 'Rasgo no encontrado' })
+    res.json({ ok: true })
   } catch (e) { next(e) }
 }
 
@@ -190,6 +200,6 @@ module.exports = {
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, addPokemon,
-  getFeats, addFeat, setEditable,
+  getFeats, addFeat, removeFeat, setEditable,
   create,
 }

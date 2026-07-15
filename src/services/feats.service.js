@@ -1,5 +1,6 @@
 const { query, SCHEMA } = require('../config/db')
 const T = `"${SCHEMA}"."feats"`
+const TFB = `"${SCHEMA}"."feats_bonus"`
 
 const findAll = async ({ limit = 100, offset = 0, search = '', type = '' }) => {
   const params = []
@@ -24,7 +25,15 @@ const findAll = async ({ limit = 100, offset = 0, search = '', type = '' }) => {
   params.push(limit, offset)
 
   const { rows } = await query(
-    `SELECT * FROM ${T} ${where}
+    `SELECT f.*, COALESCE((
+        SELECT json_agg(json_build_object(
+          'type',  fb.feats_bonus_type,
+          'llave', fb.feats_bonus_llave,
+          'valor', fb.feats_bonus_valor
+        ) ORDER BY fb.id_feats_bonus)
+        FROM ${TFB} fb WHERE fb.id_feat = f.feat_id
+      ), '[]') AS feat_bonuses
+     FROM ${T} f ${where}
      ORDER BY feat_name
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
