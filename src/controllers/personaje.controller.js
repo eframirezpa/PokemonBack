@@ -175,6 +175,29 @@ const removeFeat = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /api/personaje/:id/pokedollars  { cantidad } → descuenta pokédollars (compra)
+const spendPokedollars = async (req, res, next) => {
+  try {
+    const cantidad = Number(req.body.cantidad)
+    if (!Number.isFinite(cantidad) || cantidad < 0) return res.status(400).json({ error: 'Cantidad inválida' })
+    const result = await svc.spendPokedollars(req.params.id, cantidad)
+    if (result.error === 'notfound')     return res.status(404).json({ error: 'Personaje no encontrado' })
+    if (result.error === 'insufficient') return res.status(409).json({ error: 'No tienes suficientes pokédollars', pokedollars: result.pokedollars })
+    res.json(result)
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/personaje/:id/pokedollars/add  { cantidad } → suma pokédollars
+const addPokedollars = async (req, res, next) => {
+  try {
+    const cantidad = Number(req.body.cantidad)
+    if (!Number.isFinite(cantidad) || cantidad <= 0) return res.status(400).json({ error: 'Cantidad inválida' })
+    const result = await svc.addPokedollars(req.params.id, cantidad)
+    if (result.error === 'notfound') return res.status(404).json({ error: 'Personaje no encontrado' })
+    res.json(result)
+  } catch (e) { next(e) }
+}
+
 // PATCH /api/personaje/:id/editable  { is_editable } → activa/desactiva la edición
 const setEditable = async (req, res, next) => {
   try {
@@ -201,6 +224,6 @@ module.exports = {
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, addPokemon,
-  getFeats, addFeat, removeFeat, setEditable,
+  getFeats, addFeat, removeFeat, setEditable, spendPokedollars, addPokedollars,
   create,
 }

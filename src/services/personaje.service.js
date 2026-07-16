@@ -743,6 +743,29 @@ const removeFeat = async (id_personaje, personaje_feat_id) => {
   return rowCount > 0
 }
 
+// Descuenta pokédollars al personaje. Requiere tener pokédollars suficientes (>= cantidad a gastar).
+// Devuelve { error, pokedollars } o { pokedollars } con el nuevo saldo.
+const spendPokedollars = async (id_personaje, cantidad) => {
+  const amt = Math.max(0, Math.floor(Number(cantidad) || 0))
+  const { rows } = await query(`SELECT pokedollars_personaje FROM ${T} WHERE id_personaje = $1`, [id_personaje])
+  if (!rows[0]) return { error: 'notfound' }
+  const actual = Number(rows[0].pokedollars_personaje) || 0
+  if (actual < amt) return { error: 'insufficient', pokedollars: actual }
+  const nuevo = actual - amt
+  await query(`UPDATE ${T} SET pokedollars_personaje = $1 WHERE id_personaje = $2`, [nuevo, id_personaje])
+  return { pokedollars: nuevo }
+}
+
+// Suma pokédollars al personaje. Devuelve { error } o { pokedollars } con el nuevo saldo.
+const addPokedollars = async (id_personaje, cantidad) => {
+  const amt = Math.max(0, Math.floor(Number(cantidad) || 0))
+  const { rows } = await query(`SELECT pokedollars_personaje FROM ${T} WHERE id_personaje = $1`, [id_personaje])
+  if (!rows[0]) return { error: 'notfound' }
+  const nuevo = (Number(rows[0].pokedollars_personaje) || 0) + amt
+  await query(`UPDATE ${T} SET pokedollars_personaje = $1 WHERE id_personaje = $2`, [nuevo, id_personaje])
+  return { pokedollars: nuevo }
+}
+
 // Activa/desactiva la edición del personaje (personaje_is_editable)
 const setEditable = async (id_personaje, is_editable) => {
   const { rows } = await query(
@@ -1009,6 +1032,6 @@ module.exports = {
   findArmor, addArmor, setArmorInUse,
   findWeapon, addWeapon, setWeaponInUse,
   findPokemon, findPokemonDetail, setPokemonEnEquipo, addPokemon,
-  findFeats, addFeat, removeFeat, setEditable,
+  findFeats, addFeat, removeFeat, setEditable, spendPokedollars, addPokedollars,
   create,
 }
