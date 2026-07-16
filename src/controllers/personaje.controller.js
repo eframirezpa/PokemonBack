@@ -160,7 +160,8 @@ const addFeat = async (req, res, next) => {
     if (result.error === 'notfound') return res.status(404).json({ error: 'Feat no encontrado' })
     if (result.error === 'type')     return res.status(400).json({ error: 'Solo se pueden agregar feats de tipo General u Origin' })
     if (result.error === 'duplicate') return res.status(409).json({ error: 'El personaje ya tiene ese rasgo' })
-    if (result.error === 'choices')   return res.status(400).json({ error: 'Debes elegir los atributos del rasgo' })
+    if (result.error === 'choices')   return res.status(400).json({ error: 'Debes completar las elecciones del rasgo (atributos/habilidades)' })
+    if (result.error === 'prereq')    return res.status(400).json({ error: 'El personaje no cumple los prerequisitos del rasgo' })
     res.status(201).json(result)
   } catch (e) { next(e) }
 }

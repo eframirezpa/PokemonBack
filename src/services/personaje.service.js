@@ -22,6 +22,7 @@ const TABIL = `"${SCHEMA}"."abilities"`
 const TBONDS = `"${SCHEMA}"."bonds"`
 const TPF   = `"${SCHEMA}"."personaje_feat"`
 const TPFB  = `"${SCHEMA}"."personaje_feat_bonus"`
+const TPAP  = `"${SCHEMA}"."personaje_armor_prof"`
 const TFB   = `"${SCHEMA}"."feats_bonus"`
 const TFEATS = `"${SCHEMA}"."feats"`
 
@@ -60,6 +61,63 @@ const analyzeStatBonus = (b) => {
 const matchesPattern = (values, patterns) => {
   const chosen = values.filter(v => v > 0).sort((a, c) => c - a)
   return patterns.some(p => p.length === chosen.length && p.every((v, i) => v === chosen[i]))
+}
+
+// Analiza un feat_bonus de tipo 'skill'. valor = 'prof' | 'expert'; llave = 'any' o el nombre de la skill.
+// modes: 'choose' (elegir 1 skill), 'fixed' (skill de la llave)
+const analyzeSkillBonus = (b) => {
+  if ((b.type || '').toLowerCase() !== 'skill') return null
+  const kind = (b.valor || '').toLowerCase()
+  if (kind !== 'prof' && kind !== 'expert') return null
+  return { mode: (b.llave || '').toLowerCase().trim() === 'any' ? 'choose' : 'fixed', kind }
+}
+
+// Evalúa un prerequisito de feat_bonus. ctx: { level, statTotal(key)→num, armorProfs:Set }
+const prereqMet = (prereq, valor, ctx) => {
+  const p = (prereq || '').toLowerCase().trim()
+  if (!p) return true
+  if (p === 'lvl') return (ctx.level || 0) >= (Number(valor) || 0)
+  if (STAT_KEYS.includes(p)) return ctx.statTotal(p) >= (Number(valor) || 0)
+  if (p === 'armor prof') return ctx.armorProfs.has((valor || '').toLowerCase().trim())
+  return true // prereq desconocido → no bloquea
+}
+
+// Contexto del personaje para evaluar prerequisitos (nivel, stats totales, proficiencias de armadura)
+const buildPrereqContext = async (id_personaje) => {
+  const { rows: pr } = await query(`SELECT personaje_level, personaje_background FROM ${T} WHERE id_personaje = $1`, [id_personaje])
+  const level = pr[0]?.personaje_level || 0
+  const { rows: sRows } = await query(`SELECT * FROM ${TS} WHERE id_personaje = $1`, [id_personaje])
+  const srow = sRows[0] || {}
+  const { rows: fsRows } = await query(
+    `SELECT pfb.personaje_feat_bonus_llave l, pfb.personaje_feat_bonus_value v
+     FROM ${TPFB} pfb JOIN ${TPF} pf ON pf.personaje_feat_id = pfb.personaje_feat_bonus_personaje_feat_id
+     WHERE pf.personaje_id = $1 AND lower(pfb.personaje_feat_bonus_type) = 'stat'`, [id_personaje]
+  )
+  const featStatAdd = {}
+  for (const r of fsRows) { const k = (r.l || '').toLowerCase(); featStatAdd[k] = (featStatAdd[k] || 0) + (Number(r.v) || 0) }
+  const statTotal = (k) => (Number(srow[`personaje_${k}`]) || 0) + (Number(srow[`personaje_${k}_bonus`]) || 0) + (featStatAdd[k] || 0)
+
+  const { rows: apRows } = await query(`SELECT armor_prof FROM ${TPAP} WHERE id_personaje = $1`, [id_personaje])
+  const armorProfs = new Set(apRows.map(r => (r.armor_prof || '').toLowerCase().trim()))
+  if (pr[0]?.personaje_background) {
+    const { rows: bg } = await query(
+      `SELECT background_armor_proficiencies_value_1 v1, background_armor_proficiencies_value_2 v2,
+              background_armor_proficiencies_value_3 v3, background_armor_proficiencies_value_4 v4
+       FROM ${TBACKGROUNDS} WHERE background_id = $1`, [pr[0].personaje_background]
+    )
+    for (const v of [bg[0]?.v1, bg[0]?.v2, bg[0]?.v3, bg[0]?.v4]) if (v) armorProfs.add(v.toLowerCase().trim())
+  }
+  return { level, statTotal, armorProfs }
+}
+
+// Analiza un feat_bonus de tipo 'armor prof'. La llave puede traer 'and'/'or'.
+// modes: 'direct' (1 registro), 'and' (varios registros), 'or' (elegir 1 entre options)
+const analyzeArmorProfBonus = (b) => {
+  if ((b.type || '').toLowerCase().trim() !== 'armor prof') return null
+  const llave = (b.llave || '').trim()
+  if (/\s+or\s+/i.test(llave))  return { mode: 'or',  options: llave.split(/\s+or\s+/i).map(s => s.trim()).filter(Boolean) }
+  if (/\s+and\s+/i.test(llave)) return { mode: 'and', items:   llave.split(/\s+and\s+/i).map(s => s.trim()).filter(Boolean) }
+  return { mode: 'direct', items: [llave] }
 }
 const TORIGINS = `"${SCHEMA}"."origins"`
 const TBACKGROUNDS = `"${SCHEMA}"."backgrounds"`
@@ -436,7 +494,9 @@ const updateEquipoCantidad = async (id_personaje_equipo, cantidad) => {
 const findFullById = async (id_personaje) => {
   const { rows: pRows } = await query(
     `SELECT p.*, o.origin_name, o.origin_feat_id, b.background_name, b.background_feat_id,
-            b.background_tool_proficiencies_name, b.background_tool_proficiencies_values
+            b.background_tool_proficiencies_name, b.background_tool_proficiencies_values,
+            b.background_armor_proficiencies_value_1, b.background_armor_proficiencies_value_2,
+            b.background_armor_proficiencies_value_3, b.background_armor_proficiencies_value_4
      FROM ${T} p
      LEFT JOIN "${SCHEMA}"."origins"     o ON o.origin_id     = p.personaje_origin
      LEFT JOIN "${SCHEMA}"."backgrounds" b ON b.background_id = p.personaje_background
@@ -489,6 +549,10 @@ const findFullById = async (id_personaje) => {
      ORDER BY pw.id_personaje_weapon`,
     [id_personaje]
   )
+  const { rows: armorProfRows } = await query(
+    `SELECT armor_prof FROM ${TPAP} WHERE id_personaje = $1 ORDER BY id_personaje_armor_prof`,
+    [id_personaje]
+  )
   const { rows: extraFeatRows } = await query(
     `SELECT pf.personaje_feat_id, f.*,
             COALESCE((
@@ -498,7 +562,18 @@ const findFullById = async (id_personaje) => {
                 'value', pfb.personaje_feat_bonus_value
               ) ORDER BY pfb.personaje_feat_bonus_id)
               FROM ${TPFB} pfb WHERE pfb.personaje_feat_bonus_personaje_feat_id = pf.personaje_feat_id
-            ), '[]') AS bonos
+            ), '[]') AS bonos,
+            COALESCE((
+              SELECT json_agg(pap.armor_prof ORDER BY pap.id_personaje_armor_prof)
+              FROM ${TPAP} pap WHERE pap.personaje_armor_prof_feat_id = pf.personaje_feat_id
+            ), '[]') AS armor_profs,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'prereq', fb.feats_bonus_prerequisito,
+                'valor',  fb.feats_bonus_prerequisito_valor
+              ))
+              FROM ${TFB} fb WHERE fb.id_feat = f.feat_id AND fb.feats_bonus_prerequisito IS NOT NULL
+            ), '[]') AS prereqs
      FROM ${TPF} pf JOIN ${TFEATS} f ON f.feat_id = pf.feat_id
      WHERE pf.personaje_id = $1
      ORDER BY pf.personaje_feat_id`,
@@ -516,6 +591,7 @@ const findFullById = async (id_personaje) => {
     origin_feat:     originFeat,
     background_feat: backgroundFeat,
     extra_feats:     extraFeatRows,
+    armor_profs:     armorProfRows.map(r => r.armor_prof),
   }
 }
 
@@ -560,34 +636,77 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
 
   // Bonos del feat → filas resueltas para personaje_feat_bonus
   const { rows: bonuses } = await query(
-    `SELECT feats_bonus_type AS type, feats_bonus_llave AS llave, feats_bonus_valor AS valor
+    `SELECT feats_bonus_type AS type, feats_bonus_llave AS llave, feats_bonus_valor AS valor,
+            feats_bonus_prerequisito AS prereq, feats_bonus_prerequisito_valor AS prereq_valor
      FROM ${TFB} WHERE id_feat = $1 ORDER BY id_feats_bonus`,
     [feat_id]
   )
-  const rowsToInsert = []
+
+  // Prerequisitos: si alguno no se cumple, no se puede agregar el feat (regla todo-o-nada)
+  if (bonuses.some(b => b.prereq)) {
+    const ctx = await buildPrereqContext(id_personaje)
+    if (!bonuses.every(b => prereqMet(b.prereq, b.prereq_valor, ctx))) return { error: 'prereq' }
+  }
+  // Catálogo de skills (para validar los elegidos), solo si hay bonos skill de llave 'any'
+  const needsSkillCat = bonuses.some(b =>
+    (b.type || '').toLowerCase() === 'skill' && ['prof', 'expert'].includes((b.valor || '').toLowerCase()) &&
+    (b.llave || '').toLowerCase().trim() === 'any')
+  let validSkills = null
+  if (needsSkillCat) {
+    const { rows: sr } = await query(`SELECT skill_name FROM ${TSKILLS}`)
+    validSkills = new Set(sr.map(r => r.skill_name.toLowerCase()))
+  }
+
+  const rowsToInsert = [] // → personaje_feat_bonus
+  const armorRows    = [] // → personaje_armor_prof
   for (let i = 0; i < bonuses.length; i++) {
     const b  = bonuses[i]
     const st = analyzeStatBonus(b)
-    if (!st) { // healing / skill / otros → copiar tal cual
-      rowsToInsert.push({ type: b.type, llave: b.llave, value: b.valor })
+    if (st) {
+      if (st.mode === 'fixed') { rowsToInsert.push({ type: 'stat', llave: st.llave, value: String(st.value) }); continue }
+      // single o distribute → requiere elección del jugador
+      const chosen = choices[String(i)] ?? choices[i]
+      if (!Array.isArray(chosen) || chosen.length === 0) return { error: 'choices' }
+      const picks = chosen.map(c => ({ llave: (c.llave || '').toLowerCase(), value: parseInt(c.value, 10) || 0 }))
+      if (picks.some(p => !st.options.includes(p.llave))) return { error: 'choices' }
+      if (new Set(picks.map(p => p.llave)).size !== picks.length) return { error: 'choices' }
+      if (st.mode === 'single') {
+        if (picks.length !== 1 || picks[0].value !== st.value) return { error: 'choices' }
+      } else { // distribute
+        if (!matchesPattern(picks.map(p => p.value), st.patterns)) return { error: 'choices' }
+      }
+      for (const p of picks) rowsToInsert.push({ type: 'stat', llave: p.llave, value: String(p.value) })
       continue
     }
-    if (st.mode === 'fixed') {
-      rowsToInsert.push({ type: 'stat', llave: st.llave, value: String(st.value) })
+
+    const sk = analyzeSkillBonus(b)
+    if (sk) {
+      if (sk.mode === 'fixed') { rowsToInsert.push({ type: 'skill', llave: b.llave, value: sk.kind }); continue }
+      // choose → elegir 1 skill válida
+      const chosen = choices[String(i)] ?? choices[i]
+      if (!Array.isArray(chosen) || chosen.length !== 1) return { error: 'choices' }
+      const skillName = (chosen[0].llave || '').trim()
+      if (!skillName || (validSkills && !validSkills.has(skillName.toLowerCase()))) return { error: 'choices' }
+      rowsToInsert.push({ type: 'skill', llave: skillName, value: sk.kind })
       continue
     }
-    // single o distribute → requiere elección del jugador
-    const chosen = choices[String(i)] ?? choices[i]
-    if (!Array.isArray(chosen) || chosen.length === 0) return { error: 'choices' }
-    const picks = chosen.map(c => ({ llave: (c.llave || '').toLowerCase(), value: parseInt(c.value, 10) || 0 }))
-    if (picks.some(p => !st.options.includes(p.llave))) return { error: 'choices' }
-    if (new Set(picks.map(p => p.llave)).size !== picks.length) return { error: 'choices' }
-    if (st.mode === 'single') {
-      if (picks.length !== 1 || picks[0].value !== st.value) return { error: 'choices' }
-    } else { // distribute
-      if (!matchesPattern(picks.map(p => p.value), st.patterns)) return { error: 'choices' }
+
+    const ap = analyzeArmorProfBonus(b)
+    if (ap) {
+      if (ap.mode === 'or') {
+        const chosen = choices[String(i)] ?? choices[i]
+        if (!Array.isArray(chosen) || chosen.length !== 1) return { error: 'choices' }
+        const opt = (chosen[0].llave || '').trim()
+        if (!opt || !ap.options.some(o => o.toLowerCase() === opt.toLowerCase())) return { error: 'choices' }
+        armorRows.push(opt)
+      } else {
+        armorRows.push(...ap.items)
+      }
+      continue
     }
-    for (const p of picks) rowsToInsert.push({ type: 'stat', llave: p.llave, value: String(p.value) })
+
+    // healing / otros → copiar tal cual
+    rowsToInsert.push({ type: b.type, llave: b.llave, value: b.valor })
   }
 
   return transaction(async (client) => {
@@ -604,7 +723,14 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
         [pfId, r.type ?? null, r.llave ?? null, r.value ?? null]
       )
     }
-    return { personaje_feat_id: pfId, bonos: rowsToInsert, ...feat }
+    for (const a of armorRows) {
+      await client.query(
+        `INSERT INTO ${TPAP} (id_personaje, armor_prof, personaje_armor_prof_feat_id)
+         VALUES ($1, $2, $3)`,
+        [id_personaje, a, pfId]
+      )
+    }
+    return { personaje_feat_id: pfId, bonos: rowsToInsert, armor_profs: armorRows, ...feat }
   })
 }
 

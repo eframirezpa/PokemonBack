@@ -27,9 +27,11 @@ const findAll = async ({ limit = 100, offset = 0, search = '', type = '' }) => {
   const { rows } = await query(
     `SELECT f.*, COALESCE((
         SELECT json_agg(json_build_object(
-          'type',  fb.feats_bonus_type,
-          'llave', fb.feats_bonus_llave,
-          'valor', fb.feats_bonus_valor
+          'type',       fb.feats_bonus_type,
+          'llave',      fb.feats_bonus_llave,
+          'valor',      fb.feats_bonus_valor,
+          'prereq',     fb.feats_bonus_prerequisito,
+          'prereqValor', fb.feats_bonus_prerequisito_valor
         ) ORDER BY fb.id_feats_bonus)
         FROM ${TFB} fb WHERE fb.id_feat = f.feat_id
       ), '[]') AS feat_bonuses
