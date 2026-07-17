@@ -28,6 +28,8 @@ const TFEATS = `"${SCHEMA}"."feats"`
 
 // Stats válidos para los bonos de tipo 'stat'
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
+// Feat con manejo especial: Skilled (3 entre proficiencias de skill y textos de Tool Prof)
+const FEAT_SKILLED = 10
 
 // Analiza un feat_bonus de tipo 'stat'. Devuelve null si no es stat.
 // modes: 'fixed' (llave fija), 'single' (elegir 1 entre options), 'distribute' (repartir puntos según patterns)
@@ -119,6 +121,15 @@ const analyzeArmorProfBonus = (b) => {
   if (/\s+and\s+/i.test(llave)) return { mode: 'and', items:   llave.split(/\s+and\s+/i).map(s => s.trim()).filter(Boolean) }
   return { mode: 'direct', items: [llave] }
 }
+
+// Separador para unir varios textos capturados en personaje_feat_bonus_value (Unit Separator, no se puede teclear)
+const TEXT_SEP = String.fromCharCode(31)
+// Analiza un feat_bonus de tipo 'text'. valor = cantidad de cajas de texto a capturar.
+const analyzeTextBonus = (b) => {
+  if ((b.type || '').toLowerCase().trim() !== 'text') return null
+  return { count: Math.max(1, parseInt(b.valor, 10) || 1) }
+}
+
 const TORIGINS = `"${SCHEMA}"."origins"`
 const TBACKGROUNDS = `"${SCHEMA}"."backgrounds"`
 
@@ -705,8 +716,35 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
       continue
     }
 
+    const tx = analyzeTextBonus(b)
+    if (tx) {
+      const chosen = choices[String(i)] ?? choices[i]
+      if (!Array.isArray(chosen) || chosen.length !== tx.count) return { error: 'choices' }
+      const texts = chosen.map(c => (c.text ?? '').toString())
+      rowsToInsert.push({ type: b.type, llave: b.llave, value: texts.join(TEXT_SEP) })
+      continue
+    }
+
+    // Bonos sin type ni llave solo llevan un prerequisito → no se persisten
+    if (!(b.type || '').trim() && !(b.llave || '').trim()) continue
     // healing / otros → copiar tal cual
     rowsToInsert.push({ type: b.type, llave: b.llave, value: b.valor })
+  }
+
+  // Manejo especial: Skilled (feat 10) — exactamente 3 entre proficiencias de skill y textos de 'Tool Prof'.
+  // Skills → una fila por skill (prof); textos → una sola fila (llave 'Tool Prof') unida por el separador.
+  if (Number(feat_id) === FEAT_SKILLED) {
+    const sk = (choices && choices.skilled) || {}
+    const skills = [...new Set((Array.isArray(sk.skills) ? sk.skills : []).map(s => (s || '').trim()).filter(Boolean))]
+    const texts  = (Array.isArray(sk.texts) ? sk.texts : []).map(t => (t || '').toString().trim()).filter(Boolean)
+    if (skills.length + texts.length !== 3) return { error: 'choices' }
+    if (skills.length) {
+      const { rows: valid } = await query(`SELECT skill_name FROM ${TSKILLS} WHERE lower(skill_name) = ANY($1)`, [skills.map(s => s.toLowerCase())])
+      const validSet = new Set(valid.map(r => r.skill_name.toLowerCase()))
+      if (skills.some(s => !validSet.has(s.toLowerCase()))) return { error: 'choices' }
+      for (const s of skills) rowsToInsert.push({ type: 'skill', llave: s, value: 'prof' })
+    }
+    if (texts.length) rowsToInsert.push({ type: 'text', llave: 'Tool Prof', value: texts.join(TEXT_SEP) })
   }
 
   return transaction(async (client) => {
