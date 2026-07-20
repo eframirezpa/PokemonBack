@@ -166,6 +166,15 @@ const addFeat = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /api/personaje/:id/feats/:idpf/available { is_available } → alterna disponibilidad de un rasgo extra
+const setFeatAvailable = async (req, res, next) => {
+  try {
+    const ok = await svc.setFeatAvailable(req.params.id, req.params.idpf, !!req.body.is_available)
+    if (!ok) return res.status(404).json({ error: 'Rasgo no encontrado' })
+    res.json({ ok: true })
+  } catch (e) { next(e) }
+}
+
 // DELETE /api/personaje/:id/feats/:idpf → elimina un feat extra del personaje
 const removeFeat = async (req, res, next) => {
   try {
@@ -224,6 +233,6 @@ module.exports = {
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, addPokemon,
-  getFeats, addFeat, removeFeat, setEditable, spendPokedollars, addPokedollars,
+  getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
   create,
 }

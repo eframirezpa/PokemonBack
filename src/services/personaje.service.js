@@ -565,7 +565,7 @@ const findFullById = async (id_personaje) => {
     [id_personaje]
   )
   const { rows: extraFeatRows } = await query(
-    `SELECT pf.personaje_feat_id, f.*,
+    `SELECT pf.personaje_feat_id, pf.personaje_feat_is_available, f.*,
             COALESCE((
               SELECT json_agg(json_build_object(
                 'type',  pfb.personaje_feat_bonus_type,
@@ -770,6 +770,17 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
     }
     return { personaje_feat_id: pfId, bonos: rowsToInsert, armor_profs: armorRows, ...feat }
   })
+}
+
+// Marca un feat extra (personaje_feat) como disponible o no. Valida que sea del personaje.
+const setFeatAvailable = async (id_personaje, personaje_feat_id, is_available) => {
+  const { rows } = await query(
+    `UPDATE ${TPF} SET personaje_feat_is_available = $1
+     WHERE personaje_feat_id = $2 AND personaje_id = $3
+     RETURNING personaje_feat_id`,
+    [!!is_available, personaje_feat_id, id_personaje]
+  )
+  return rows[0] || null
 }
 
 // Elimina un feat extra del personaje (personaje_feat). Devuelve true si se borró.
@@ -1070,6 +1081,6 @@ module.exports = {
   findArmor, addArmor, setArmorInUse,
   findWeapon, addWeapon, setWeaponInUse,
   findPokemon, findPokemonDetail, setPokemonEnEquipo, addPokemon,
-  findFeats, addFeat, removeFeat, setEditable, spendPokedollars, addPokedollars,
+  findFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
   create,
 }
