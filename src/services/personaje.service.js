@@ -25,6 +25,8 @@ const TPFB  = `"${SCHEMA}"."personaje_feat_bonus"`
 const TPAP  = `"${SCHEMA}"."personaje_armor_prof"`
 const TFB   = `"${SCHEMA}"."feats_bonus"`
 const TFEATS = `"${SCHEMA}"."feats"`
+const TSPEC = `"${SCHEMA}"."specializations"`
+const TPSB  = `"${SCHEMA}"."personaje_specializations_bonus"`
 
 // Stats válidos para los bonos de tipo 'stat'
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
@@ -564,6 +566,21 @@ const findFullById = async (id_personaje) => {
     `SELECT armor_prof FROM ${TPAP} WHERE id_personaje = $1 ORDER BY id_personaje_armor_prof`,
     [id_personaje]
   )
+  const { rows: specRows } = await query(
+    `SELECT s.*,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'type',  b.tipo_personaje_specializations_bonus,
+                'llave', b.llave_personaje_specializations_bonus,
+                'value', b.valor_personaje_specializations_bonus
+              ) ORDER BY b.id_personaje_specializations_bonus)
+              FROM ${TPSB} b WHERE b.id_personaje = $1 AND b.id_specializations = s.specialization_id
+            ), '[]') AS bonos
+     FROM ${TSPEC} s
+     WHERE s.specialization_id IN (SELECT DISTINCT id_specializations FROM ${TPSB} WHERE id_personaje = $1)
+     ORDER BY s.specialization_name`,
+    [id_personaje]
+  )
   const { rows: extraFeatRows } = await query(
     `SELECT pf.personaje_feat_id, pf.personaje_feat_is_available, f.*,
             COALESCE((
@@ -603,6 +620,7 @@ const findFullById = async (id_personaje) => {
     background_feat: backgroundFeat,
     extra_feats:     extraFeatRows,
     armor_profs:     armorProfRows.map(r => r.armor_prof),
+    specializations: specRows,
   }
 }
 
@@ -770,6 +788,52 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
     }
     return { personaje_feat_id: pfId, bonos: rowsToInsert, armor_profs: armorRows, ...feat }
   })
+}
+
+// ── Especializaciones del personaje (personaje_specializations_bonus) ──
+// Agrega una especialización copiando sus bonos resueltos. No permite repetir la misma.
+//   ability_score_increase → tipo 'stat',  llave = stat,  valor = cantidad
+//   skill_proficiency      → tipo 'skill', llave = skill, valor = 'exp'
+const addSpecialization = async (id_personaje, id_specialization) => {
+  const { rows: sRows } = await query(`SELECT * FROM ${TSPEC} WHERE specialization_id = $1`, [id_specialization])
+  const spec = sRows[0]
+  if (!spec) return { error: 'notfound' }
+
+  const { rows: dup } = await query(
+    `SELECT 1 FROM ${TPSB} WHERE id_personaje = $1 AND id_specializations = $2 LIMIT 1`,
+    [id_personaje, id_specialization]
+  )
+  if (dup.length) return { error: 'duplicate' }
+
+  const bonos = []
+  if (spec.specialization_ability_score_increase) {
+    bonos.push({ type: 'stat', llave: spec.specialization_ability_score_increase, value: String(spec.specialization_ability_score_increase_value ?? 1) })
+  }
+  if (spec.specialization_skill_proficiency) {
+    bonos.push({ type: 'skill', llave: spec.specialization_skill_proficiency, value: 'exp' })
+  }
+
+  return transaction(async (client) => {
+    for (const b of bonos) {
+      await client.query(
+        `INSERT INTO ${TPSB}
+           (id_personaje, id_specializations, tipo_personaje_specializations_bonus,
+            llave_personaje_specializations_bonus, valor_personaje_specializations_bonus)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [id_personaje, id_specialization, b.type, b.llave, b.value]
+      )
+    }
+    return { ...spec, bonos }
+  })
+}
+
+// Elimina una especialización del personaje (y sus bonos). Devuelve true si se borró.
+const removeSpecialization = async (id_personaje, id_specialization) => {
+  const { rowCount } = await query(
+    `DELETE FROM ${TPSB} WHERE id_personaje = $1 AND id_specializations = $2`,
+    [id_personaje, id_specialization]
+  )
+  return rowCount > 0
 }
 
 // Marca un feat extra (personaje_feat) como disponible o no. Valida que sea del personaje.
@@ -1082,5 +1146,6 @@ module.exports = {
   findWeapon, addWeapon, setWeaponInUse,
   findPokemon, findPokemonDetail, setPokemonEnEquipo, addPokemon,
   findFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
+  addSpecialization, removeSpecialization,
   create,
 }

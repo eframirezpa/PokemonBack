@@ -166,6 +166,27 @@ const addFeat = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// POST /api/personaje/:id/specializations { id_specialization } → agrega una especialización y sus bonos
+const addSpecialization = async (req, res, next) => {
+  try {
+    const id_specialization = Number(req.body.id_specialization)
+    if (!id_specialization) return res.status(400).json({ error: 'id_specialization requerido' })
+    const result = await svc.addSpecialization(req.params.id, id_specialization)
+    if (result.error === 'notfound')  return res.status(404).json({ error: 'Especialización no encontrada' })
+    if (result.error === 'duplicate') return res.status(409).json({ error: 'El personaje ya tiene esa especialización' })
+    res.status(201).json(result)
+  } catch (e) { next(e) }
+}
+
+// DELETE /api/personaje/:id/specializations/:idspec → elimina una especialización y sus bonos
+const removeSpecialization = async (req, res, next) => {
+  try {
+    const ok = await svc.removeSpecialization(req.params.id, req.params.idspec)
+    if (!ok) return res.status(404).json({ error: 'Especialización no encontrada' })
+    res.json({ ok: true })
+  } catch (e) { next(e) }
+}
+
 // PATCH /api/personaje/:id/feats/:idpf/available { is_available } → alterna disponibilidad de un rasgo extra
 const setFeatAvailable = async (req, res, next) => {
   try {
@@ -234,5 +255,6 @@ module.exports = {
   getWeapon, addWeapon, updateWeaponInUse,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, addPokemon,
   getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
+  addSpecialization, removeSpecialization,
   create,
 }
