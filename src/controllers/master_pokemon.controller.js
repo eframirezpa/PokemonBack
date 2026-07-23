@@ -10,6 +10,18 @@ const getPokemon = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// GET /api/master/pokemon/level-preview?id_pokemon=&level= → valores por defecto según el nivel
+const getLevelPreview = async (req, res, next) => {
+  try {
+    const id_pokemon = Number(req.query.id_pokemon)
+    const level = Number(req.query.level)
+    if (!id_pokemon) return res.status(400).json({ error: 'id_pokemon requerido' })
+    const data = await svc.levelPreview(id_pokemon, level)
+    if (!data) return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json(data)
+  } catch (e) { next(e) }
+}
+
 // GET /api/master/pokemon/:idmp → detalle completo
 const getPokemonDetail = async (req, res, next) => {
   try {
@@ -23,11 +35,11 @@ const getPokemonDetail = async (req, res, next) => {
 const addPokemon = async (req, res, next) => {
   try {
     const { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie,
-            type_1, type_2, hp, stats, skills } = req.body
+            type_1, type_2, hp, stats, skills, level, proficiency, experiencia } = req.body
     if (!id_pokemon) return res.status(400).json({ error: 'id_pokemon requerido' })
     const created = await svc.addPokemon(req.user.user_id, {
       id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie,
-      type_1, type_2, hp, stats, skills,
+      type_1, type_2, hp, stats, skills, level, proficiency, experiencia,
     })
     if (!created) return res.status(404).json({ error: 'Pokémon no encontrado' })
     res.status(201).json(created)
@@ -83,6 +95,6 @@ const removePokemon = async (req, res, next) => {
 }
 
 module.exports = {
-  getPokemon, getPokemonDetail, addPokemon, updatePokemon,
+  getPokemon, getPokemonDetail, getLevelPreview, addPokemon, updatePokemon,
   updatePokemonCombate, updatePokemonEnEquipo, updatePokemonEnJuego, removePokemon,
 }

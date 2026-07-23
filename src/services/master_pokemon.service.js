@@ -14,6 +14,16 @@ const TNAT     = `"${SCHEMA}"."natures"`
 const TMOVES   = `"${SCHEMA}"."moves"`
 const TABIL    = `"${SCHEMA}"."abilities"`
 const TBONDS   = `"${SCHEMA}"."bonds"`
+const TLEVELS  = `"${SCHEMA}"."pokemon_levels"`
+const TEXP     = `"${SCHEMA}"."pokemon_experience_levels"`
+const TEVO     = `"${SCHEMA}"."evolution"`
+
+const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
+const STRUGGLE_ID = 705
+const splitList = s => (s || '').split(',').map(x => x.trim()).filter(Boolean)
+const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min
+// Columna de movimientos por nivel de "New Moves" en la tabla pokemon
+const NEW_MOVE_COL = { 2: 'pokemon_moves_level2', 6: 'pokemon_moves_level6', 10: 'pokemon_moves_level10', 14: 'pokemon_moves_level14', 18: 'pokemon_moves_level18' }
 
 const norm = (s) => (s || '').toLowerCase().trim()
 
@@ -51,7 +61,7 @@ const findPokemon = async (id_master, enEquipo = null) => {
   if (enEquipo !== null) { params.push(enEquipo); cond = ` AND mp.pokemon_en_equipo = $${params.length}` }
   const { rows } = await query(
     `SELECT mp.id_master_pokemon, mp.id_pokemon, mp.pokemon_apodo, mp.pokemon_level,
-            mp.pokemon_en_equipo, mp.pokemon_is_shiny, mp.personaje_pokemon_is_in_game,
+            mp.pokemon_experiencia, mp.pokemon_en_equipo, mp.pokemon_is_shiny, mp.personaje_pokemon_is_in_game,
             mp.personaje_pokemon_type_1, mp.personaje_pokemon_type_2,
             t1.pokemon_types_name AS type_1_name, t2.pokemon_types_name AS type_2_name,
             pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny,
@@ -70,7 +80,7 @@ const findPokemon = async (id_master, enEquipo = null) => {
 // Detalle completo de un Pokémon del master (tipo pokédex, con datos persistidos)
 const findPokemonDetail = async (id_master_pokemon) => {
   const { rows } = await query(
-    `SELECT mp.*, pk.pokemon_name, pk.pokemon_type_1, pk.pokemon_type_2, pk.pokemon_gender,
+    `SELECT mp.*, pk.pokemon_name, pk.pokemon_type_1, pk.pokemon_type_2, pk.pokemon_gender, pk.pokemon_min_level,
             pk.pokemon_media_main, pk.pokemon_media_main_shiny, pk.pokemon_media_sprite,
             n.nature_name, n.nature_effect_increase, n.nature_effect_increase_value,
             n.nature_effect_decrease, n.nature_effect_decrease_value,
@@ -174,10 +184,93 @@ const setPokemonEnJuego = async (id_master, id_master_pokemon, enJuego) => {
 }
 
 // Agrega un Pokémon (especie de la pokédex) al master, con stats, skills, movimientos y pasiva.
+// Tamaño de la línea evolutiva (1/2/3+) = tamaño del componente conexo en la tabla evolution.
+const evolutionLine = async (id_pokemon) => {
+  const { rows } = await query(`SELECT evolution_from_pokemon_id f, evolution_to_pokemon_id t FROM ${TEVO}`)
+  const adj = new Map()
+  const link = (a, b) => { if (a == null || b == null) return; if (!adj.has(a)) adj.set(a, new Set()); adj.get(a).add(b) }
+  for (const e of rows) { link(e.f, e.t); link(e.t, e.f) }
+  const seen = new Set([id_pokemon]); const stack = [id_pokemon]
+  while (stack.length) { const cur = stack.pop(); for (const n of (adj.get(cur) || [])) if (!seen.has(n)) { seen.add(n); stack.push(n) } }
+  return Math.min(seen.size, 3)
+}
+
+// Calcula los valores por defecto de un Pokémon del master según el nivel elegido:
+// stats entrenados (ASI + Peak Power), proficiencia, tiradas de HP, experiencia y
+// movimientos por defecto (4 al azar del pool ampliado por "New Moves").
+const levelPreview = async (id_pokemon, levelRaw) => {
+  const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [id_pokemon])
+  const pk = pkRows[0]
+  if (!pk) return null
+  const minLevel = Number(pk.pokemon_min_level) || 1
+  const level = Math.max(minLevel, Math.min(20, Number(levelRaw) || minLevel))
+
+  const { rows: lvls } = await query(`SELECT * FROM ${TLEVELS} WHERE pokemon_level <= $1 ORDER BY pokemon_level`, [level])
+  const byLevel = new Map(lvls.map(l => [l.pokemon_level, l]))
+  const proficiency = Number(byLevel.get(level)?.pokemon_level_proficiency_bonus) || 2
+
+  // Stats base de la pokédex (se entrenan a medida que se aplican los niveles)
+  const stats = Object.fromEntries(STAT_KEYS.map(k => [k, Number(pk[`pokemon_${k}`]) || 0]))
+  const line = await evolutionLine(id_pokemon)
+  const trainPts = line === 1 ? 4 : line === 2 ? 3 : 2
+
+  // Pool de movimientos: inicia con los de nivel 1 + los de cada "New Moves" alcanzado
+  const poolNames = splitList(pk.pokemon_moves_start)
+
+  // Aplica los bonos nivel por nivel, en orden (2 → nivel elegido)
+  for (let L = 2; L <= level; L++) {
+    const row = byLevel.get(L)
+    if (!row) continue
+    if (Number(row.pokemon_level_grants_new_moves) === 1 && NEW_MOVE_COL[L]) {
+      poolNames.push(...splitList(pk[NEW_MOVE_COL[L]]))
+    }
+    if (Number(row.pokemon_level_grants_ability_score_improvement) === 1) {
+      // Entrena trainPts puntos: cada uno al stat más alto < 20 (empates al azar)
+      for (let p = 0; p < trainPts; p++) {
+        const cand = STAT_KEYS.filter(k => stats[k] < 20)
+        if (!cand.length) break
+        const maxv = Math.max(...cand.map(k => stats[k]))
+        const tied = cand.filter(k => stats[k] === maxv)
+        stats[tied[Math.floor(Math.random() * tied.length)]] += 1
+      }
+    }
+    if (Number(row.pokemon_level_grants_peak_power) === 1) {
+      // +2 al stat máximo (aunque sea 20, sube hasta 22); empates al azar
+      const maxv = Math.max(...STAT_KEYS.map(k => stats[k]))
+      const tied = STAT_KEYS.filter(k => stats[k] === maxv)
+      stats[tied[Math.floor(Math.random() * tied.length)]] += 2
+    }
+  }
+
+  // HP: por cada nivel por encima del mínimo, tirada aleatoria entre 3 y 4
+  let hpRolls = 0
+  for (let L = minLevel + 1; L <= level; L++) hpRolls += randInt(3, 4)
+
+  // Movimientos por defecto: 4 al azar del pool (sin Struggle)
+  const uniqNames = [...new Set(poolNames.map(n => n.trim().toLowerCase()).filter(Boolean))]
+  let moveObjs = []
+  if (uniqNames.length) {
+    const { rows: mrows } = await query(
+      `SELECT move_id, move_name, move_type FROM ${TMOVES} WHERE lower(move_name) = ANY($1)`, [uniqNames])
+    moveObjs = mrows.filter(m => m.move_id !== STRUGGLE_ID)
+  }
+  const defaultMoves = [...moveObjs].sort(() => Math.random() - 0.5).slice(0, 4)
+
+  const { rows: exp } = await query(`SELECT pokemon_experience_needed e FROM ${TEXP} WHERE pokemon_level = $1`, [level])
+  const experiencia = Number(exp[0]?.e) || 0
+
+  return {
+    level, min_level: minLevel, proficiency, stats,
+    hp_base: Number(pk.pokemon_hit_points) || 0, hp_rolls: hpRolls,
+    experiencia, evolution_line: line,
+    default_moves: defaultMoves.map(m => ({ move_id: m.move_id, move_name: m.move_name, move_type: m.move_type })),
+  }
+}
+
 // `overrides` opcionales (usados por el creador del master): type_1, type_2 (ids),
 // hp, stats {dex,str,...} (base) y skills [{ id_skill, pref, expert }]. Lo no provisto
 // se deriva de la pokédex, igual que en la creación del jugador.
-const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie, type_1, type_2, hp: hpOverride, stats: statsOverride, skills: skillsOverride }) => {
+const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie, type_1, type_2, hp: hpOverride, stats: statsOverride, skills: skillsOverride, level: levelOverride, proficiency: profOverride, experiencia: expOverride }) => {
   const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [id_pokemon])
   const pk = pkRows[0]
   if (!pk) return null
@@ -198,7 +291,9 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
 
   const generoText = generoTextOf(genero)
   const hp = hpOverride != null ? Number(hpOverride) : (Number(pk.pokemon_hit_points) || 0)
-  const level = Number(pk.pokemon_min_level) || 1
+  const level = levelOverride != null ? Number(levelOverride) : (Number(pk.pokemon_min_level) || 1)
+  const proficiency = profOverride != null ? Number(profOverride) : 2
+  const experiencia = expOverride != null ? Number(expOverride) : 0
   const hitDice = `1${pk.pokemon_hit_dice || ''}`
   const bond = id_bond ? Number(id_bond) : null
   const splitLower = s => (s || '').split(',').map(norm).filter(Boolean)
@@ -220,12 +315,12 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
          pokemon_sense_1_name, pokemon_sense_1_value,
          pokemon_sense_2_name, pokemon_sense_2_value,
          personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf,
-         personaje_pokemon_type_1, personaje_pokemon_type_2
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
+         personaje_pokemon_type_1, personaje_pokemon_type_2, pokemon_experiencia
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)
        RETURNING *`,
       [
         id_master, id_pokemon, apodo ?? pk.pokemon_name, hp, hp,
-        true, 2, 3, level,
+        true, proficiency, 3, level,
         hitDice, pk.pokemon_saving_throws ?? null, '1/1',
         pk.pokemon_armor_class != null ? Number(pk.pokemon_armor_class) : null,
         id_nat, 2, bond,
@@ -237,14 +332,17 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
         pk.pokemon_sense_1_name ?? null, pk.pokemon_sense_1_value ?? null,
         pk.pokemon_sense_2_name ?? null, pk.pokemon_sense_2_value ?? null,
         0, 0, 0,
-        type1Id, type2Id,
+        type1Id, type2Id, experiencia,
       ]
     )
     const mp = mpRows[0]
     const id_mp = mp.id_master_pokemon
 
-    // ── 2. master_pokemon_stats (base = override o pokédex, bonus = naturaleza) ──
+    // ── 2. master_pokemon_stats ──
+    // Si el creador envía stats, ya traen la naturaleza incluida → bono 0 (no contar doble).
+    // Si no, se usa la base de la pokédex + el bono de naturaleza.
     const base = k => (statsOverride && statsOverride[k] != null) ? Number(statsOverride[k]) : (Number(pk[`pokemon_${k}`]) || 0)
+    const bonus = statsOverride ? { dex: 0, str: 0, con: 0, int: 0, wis: 0, cha: 0 } : natureAdj
     await client.query(
       `INSERT INTO ${TMPS} (
          id_master_pokemon,
@@ -256,7 +354,7 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
       [
         id_mp,
         base('dex'), base('str'), base('con'), base('int'), base('wis'), base('cha'),
-        natureAdj.dex, natureAdj.str, natureAdj.con, natureAdj.int, natureAdj.wis, natureAdj.cha,
+        bonus.dex, bonus.str, bonus.con, bonus.int, bonus.wis, bonus.cha,
         savingSet.has('dex'), savingSet.has('str'), savingSet.has('con'),
         savingSet.has('int'), savingSet.has('wis'), savingSet.has('cha'),
       ]
@@ -308,7 +406,6 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
 const updatePokemon = async (id_master, id_master_pokemon, data) => {
   const { apodo, genero, id_nature, type_1, type_2, hp, stats, skills, move_ids, id_abilitie } = data
   const id_nat = id_nature != null ? Number(id_nature) : null
-  const natureAdj = await computeNatureAdj(id_nat)
   const t1 = type_1 != null ? Number(type_1) : null
   const t2 = type_2 != null ? Number(type_2) : null
 
@@ -329,17 +426,16 @@ const updatePokemon = async (id_master, id_master_pokemon, data) => {
       [apodo ?? null, generoTextOf(genero), id_nat, Number(hp) || 0, t1, t2, id_master_pokemon, id_master]
     )
 
-    // stats: base (editable) + bono de naturaleza
+    // stats: los stats ya incluyen la naturaleza → bono 0
     if (stats) {
       const b = k => Number(stats[k]) || 0
       await client.query(
         `UPDATE ${TMPS} SET
            pokemon_dex = $1, pokemon_str = $2, pokemon_con = $3, pokemon_int = $4, pokemon_wis = $5, pokemon_cha = $6,
-           pokemon_dex_bonus = $7, pokemon_str_bonus = $8, pokemon_con_bonus = $9,
-           pokemon_int_bonus = $10, pokemon_wis_bonus = $11, pokemon_cha_bonus = $12
-         WHERE id_master_pokemon = $13`,
+           pokemon_dex_bonus = 0, pokemon_str_bonus = 0, pokemon_con_bonus = 0,
+           pokemon_int_bonus = 0, pokemon_wis_bonus = 0, pokemon_cha_bonus = 0
+         WHERE id_master_pokemon = $7`,
         [b('dex'), b('str'), b('con'), b('int'), b('wis'), b('cha'),
-         natureAdj.dex, natureAdj.str, natureAdj.con, natureAdj.int, natureAdj.wis, natureAdj.cha,
          id_master_pokemon]
       )
     }
@@ -394,6 +490,6 @@ const removePokemon = async (id_master, id_master_pokemon) => {
 }
 
 module.exports = {
-  findPokemon, findPokemonDetail, updatePokemonCombate,
+  findPokemon, findPokemonDetail, updatePokemonCombate, levelPreview,
   setPokemonEnEquipo, setPokemonEnJuego, addPokemon, updatePokemon, removePokemon,
 }

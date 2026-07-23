@@ -314,7 +314,7 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
   if (enEquipo !== null) { params.push(enEquipo); cond = ` AND pp.pokemon_en_equipo = $${params.length}` }
   const { rows } = await query(
     `SELECT pp.id_personaje_pokemon, pp.id_pokemon, pp.pokemon_apodo, pp.pokemon_level,
-            pp.pokemon_en_equipo, pp.pokemon_is_shiny, pp.personaje_pokemon_is_in_game,
+            pp.pokemon_experiencia, pp.pokemon_en_equipo, pp.pokemon_is_shiny, pp.personaje_pokemon_is_in_game,
             pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny,
             pk.pokemon_media_main, pk.pokemon_media_main_shiny
      FROM ${TPP} pp
