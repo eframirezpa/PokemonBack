@@ -11,6 +11,7 @@ const TSKILLS = `"${SCHEMA}"."skills"`
 const TARMOR  = `"${SCHEMA}"."armor_types"`
 const TWEAPON = `"${SCHEMA}"."weapon_types"`
 const TPOKEDEX = `"${SCHEMA}"."pokemon"`
+const TPTYPES  = `"${SCHEMA}"."pokemon_types"`
 const TUP = `"${SCHEMA}"."usuarios_partida"`
 const TPPM = `"${SCHEMA}"."personaje_pokemon_moves"`
 const TPS  = `"${SCHEMA}"."pokemon_stats"`
@@ -313,8 +314,9 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
   if (enEquipo !== null) { params.push(enEquipo); cond = ` AND pp.pokemon_en_equipo = $${params.length}` }
   const { rows } = await query(
     `SELECT pp.id_personaje_pokemon, pp.id_pokemon, pp.pokemon_apodo, pp.pokemon_level,
-            pp.pokemon_en_equipo, pp.pokemon_is_shiny,
-            pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pk.pokemon_media_main
+            pp.pokemon_en_equipo, pp.pokemon_is_shiny, pp.personaje_pokemon_is_in_game,
+            pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny,
+            pk.pokemon_media_main, pk.pokemon_media_main_shiny
      FROM ${TPP} pp
      JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
      WHERE pp.id_personaje = $1${cond}
@@ -322,6 +324,27 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
     params
   )
   return rows.map(fixMedia)
+}
+
+// Marca (o desmarca) el Pokémon invocado. Solo uno puede estar en juego a la vez,
+// así que al activar uno se apaga cualquier otro del mismo personaje.
+const setPokemonEnJuego = async (id_personaje, id_personaje_pokemon, enJuego) => {
+  return transaction(async (client) => {
+    if (enJuego) {
+      await client.query(
+        `UPDATE ${TPP} SET personaje_pokemon_is_in_game = false
+         WHERE id_personaje = $1 AND personaje_pokemon_is_in_game = true`,
+        [id_personaje]
+      )
+    }
+    const { rows } = await client.query(
+      `UPDATE ${TPP} SET personaje_pokemon_is_in_game = $1
+       WHERE id_personaje_pokemon = $2 AND id_personaje = $3
+       RETURNING *`,
+      [enJuego, id_personaje_pokemon, id_personaje]
+    )
+    return rows[0] || null
+  })
 }
 
 // Detalle completo de un Pokémon del personaje (tipo pokédex, con datos persistidos)
@@ -383,8 +406,10 @@ const setPokemonEnEquipo = async (id_personaje, id_personaje_pokemon, enEquipo) 
     )
     if (rows[0].c >= 6) return { full: true }
   }
+  // Al sacar del cinturón, también deja de estar invocado (no puede seguir "en juego" fuera del equipo)
+  const extra = enEquipo ? '' : ', personaje_pokemon_is_in_game = false'
   const { rows } = await query(
-    `UPDATE ${TPP} SET pokemon_en_equipo = $1
+    `UPDATE ${TPP} SET pokemon_en_equipo = $1${extra}
      WHERE id_personaje_pokemon = $2 AND id_personaje = $3
      RETURNING *`,
     [enEquipo, id_personaje_pokemon, id_personaje]
@@ -1042,6 +1067,16 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
     }
   }
 
+  // Tipos del pokémon padre (por nombre en la pokédex) → id en pokemon_types
+  const typeId = async (name) => {
+    if (!name) return null
+    const { rows } = await query(
+      `SELECT pokemon_types_id FROM ${TPTYPES} WHERE lower(trim(pokemon_types_name)) = lower(trim($1))`, [name])
+    return rows[0]?.pokemon_types_id ?? null
+  }
+  const type1Id = await typeId(pk.pokemon_type_1)
+  const type2Id = await typeId(pk.pokemon_type_2)
+
   const generoText = genero === 'F' ? 'Female' : genero === 'M' ? 'Male' : 'Sin género'
   const hp = Number(pk.pokemon_hit_points) || 0
   const hitDice = `1${pk.pokemon_hit_dice || ''}`               // ej. "1d6"
@@ -1064,8 +1099,9 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
          personaje_pokemon_genero, pokemon_is_shiny,
          pokemon_sense_1_name, pokemon_sense_1_value,
          pokemon_sense_2_name, pokemon_sense_2_value,
-         personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+         personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf,
+         personaje_pokemon_type_1, personaje_pokemon_type_2
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
        RETURNING *`,
       [
         id_personaje, id_pokemon, apodo ?? pk.pokemon_name, hp, hp,
@@ -1081,6 +1117,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
         pk.pokemon_sense_1_name ?? null, pk.pokemon_sense_1_value ?? null,
         pk.pokemon_sense_2_name ?? null, pk.pokemon_sense_2_value ?? null,
         0, 0, 0, // personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf
+        type1Id, type2Id,
       ]
     )
     const pp = ppRows[0]
@@ -1144,7 +1181,7 @@ module.exports = {
   findEquipo, addEquipo, updateEquipoCantidad,
   findArmor, addArmor, setArmorInUse,
   findWeapon, addWeapon, setWeaponInUse,
-  findPokemon, findPokemonDetail, setPokemonEnEquipo, addPokemon,
+  findPokemon, findPokemonDetail, setPokemonEnEquipo, setPokemonEnJuego, addPokemon,
   findFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,

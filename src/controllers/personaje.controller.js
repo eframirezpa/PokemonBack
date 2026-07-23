@@ -101,6 +101,15 @@ const updatePokemonEnEquipo = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /personaje/:id/pokemon/:idpp/en-juego → marca / desmarca el Pokémon invocado
+const updatePokemonEnJuego = async (req, res, next) => {
+  try {
+    const result = await svc.setPokemonEnJuego(req.params.id, req.params.idpp, !!req.body.en_juego)
+    if (!result) return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json(result)
+  } catch (e) { next(e) }
+}
+
 const addPokemon = async (req, res, next) => {
   try {
     const { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie } = req.body
@@ -253,7 +262,7 @@ module.exports = {
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
-  getPokemon, getPokemonDetail, updatePokemonEnEquipo, addPokemon,
+  getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon,
   getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,
