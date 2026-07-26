@@ -31,6 +31,7 @@ const pokemonExpLevelsRoutes = require('./routes/pokemon_experience_levels.route
 const featsBonusRoutes       = require('./routes/feats_bonus.routes')
 const skillsRoutes           = require('./routes/skills.routes')
 const personajeDetailsRoutes = require('./routes/personaje_details.routes')
+const notasRoutes            = require('./routes/notas.routes')
 
 const app = express()
 
@@ -87,6 +88,7 @@ app.use('/api/pokemon-experience-levels', pokemonExpLevelsRoutes)
 app.use('/api/feats-bonus',       featsBonusRoutes)
 app.use('/api/skills',            skillsRoutes)
 app.use('/api/personaje-details', personajeDetailsRoutes)
+app.use('/api/notas',             notasRoutes)
 
 // 404
 app.use((_req, res) => {
