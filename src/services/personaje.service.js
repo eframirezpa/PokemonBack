@@ -28,6 +28,7 @@ const TFB   = `"${SCHEMA}"."feats_bonus"`
 const TFEATS = `"${SCHEMA}"."feats"`
 const TSPEC = `"${SCHEMA}"."specializations"`
 const TPSB  = `"${SCHEMA}"."personaje_specializations_bonus"`
+const TEXP  = `"${SCHEMA}"."pokemon_experience_levels"`
 
 // Stats válidos para los bonos de tipo 'stat'
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
@@ -394,7 +395,13 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
      ORDER BY pv.id_personaje_pokemon_pasiva_id`,
     [id_personaje_pokemon]
   )
-  return { ...fixMedia(pp), stats: statsRows[0] || null, skills, moves, pasivas }
+  // Experiencia necesaria para el siguiente nivel (null si ya es nivel máximo)
+  const { rows: expRows } = await query(
+    `SELECT pokemon_experience_needed e FROM ${TEXP} WHERE pokemon_level = $1`,
+    [(Number(pp.pokemon_level) || 1) + 1]
+  )
+  const exp_next = expRows.length ? Number(expRows[0].e) : null
+  return { ...fixMedia(pp), stats: statsRows[0] || null, skills, moves, pasivas, exp_next }
 }
 
 // Marca/desmarca un Pokémon como "en el cinturón". Máximo 6 en el cinturón.
