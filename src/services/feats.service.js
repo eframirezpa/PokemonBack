@@ -31,7 +31,8 @@ const findAll = async ({ limit = 100, offset = 0, search = '', type = '' }) => {
           'llave',      fb.feats_bonus_llave,
           'valor',      fb.feats_bonus_valor,
           'prereq',     fb.feats_bonus_prerequisito,
-          'prereqValor', fb.feats_bonus_prerequisito_valor
+          'prereqValor', fb.feats_bonus_prerequisito_valor,
+          'limit',      fb.feats_bonus_limit
         ) ORDER BY fb.id_feats_bonus)
         FROM ${TFB} fb WHERE fb.id_feat = f.feat_id
       ), '[]') AS feat_bonuses

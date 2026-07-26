@@ -6,6 +6,9 @@ const TMPS = `"${SCHEMA}"."master_pokemon_stats"`
 const TMPSK = `"${SCHEMA}"."master_pokemon_skills"`
 const TMPM = `"${SCHEMA}"."master_pokemon_moves"`
 const TMPP = `"${SCHEMA}"."master_pokemon_pasiva"`
+const TMPF  = `"${SCHEMA}"."master_pokemon_feat"`
+const TMPFB = `"${SCHEMA}"."master_pokemon_feat_bonus"`
+const TFEATS = `"${SCHEMA}"."feats"`
 // Catálogos compartidos
 const TPOKEDEX = `"${SCHEMA}"."pokemon"`
 const TPTYPES  = `"${SCHEMA}"."pokemon_types"`
@@ -124,7 +127,31 @@ const findPokemonDetail = async (id_master_pokemon) => {
      ORDER BY pv.id_master_pokemon_pasiva_id`,
     [id_master_pokemon]
   )
-  return { ...fixMedia(mp), stats: statsRows[0] || null, skills, moves, pasivas }
+  const { rows: feats } = await query(
+    `SELECT mf.master_pokemon_feat_id, mf.feat_id, mf.personaje_feat_is_available AS is_available,
+            f.feat_name, f.feat_type, f.feat_prerequisite, f.feat_benefits, f.feat_notes,
+            f.feat_ability_score_increase, f.feat_is_repeatable,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'type',  b.master_pokemon_feat_bonus_type,
+                'llave', b.master_pokemon_feat_bonus_llave,
+                'value', b.master_pokemon_feat_bonus_value
+              ) ORDER BY b.master_pokemon_feat_bonus_id)
+              FROM ${TMPFB} b
+              WHERE b.master_pokemon_feat_bonus_master_pokemon_feat_id = mf.master_pokemon_feat_id
+            ), '[]') AS bonos
+     FROM ${TMPF} mf JOIN ${TFEATS} f ON f.feat_id = mf.feat_id
+     WHERE mf.id_master_pokemon = $1
+     ORDER BY mf.master_pokemon_feat_id`,
+    [id_master_pokemon]
+  )
+  // Experiencia para el siguiente nivel (null si es nivel máximo)
+  const { rows: expRows } = await query(
+    `SELECT pokemon_experience_needed e FROM ${TEXP} WHERE pokemon_level = $1`,
+    [(Number(mp.pokemon_level) || 1) + 1]
+  )
+  const exp_next = expRows.length ? Number(expRows[0].e) : null
+  return { ...fixMedia(mp), stats: statsRows[0] || null, skills, moves, pasivas, feats, exp_next }
 }
 
 // Actualiza campos de combate de un Pokémon del master (HP actual / exhaust / dsts / dstf)
@@ -270,7 +297,7 @@ const levelPreview = async (id_pokemon, levelRaw) => {
 // `overrides` opcionales (usados por el creador del master): type_1, type_2 (ids),
 // hp, stats {dex,str,...} (base) y skills [{ id_skill, pref, expert }]. Lo no provisto
 // se deriva de la pokédex, igual que en la creación del jugador.
-const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie, type_1, type_2, hp: hpOverride, stats: statsOverride, skills: skillsOverride, level: levelOverride, proficiency: profOverride, experiencia: expOverride }) => {
+const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie, type_1, type_2, hp: hpOverride, stats: statsOverride, skills: skillsOverride, level: levelOverride, proficiency: profOverride, experiencia: expOverride, feats }) => {
   const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [id_pokemon])
   const pk = pkRows[0]
   if (!pk) return null
@@ -397,6 +424,26 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
       )
     }
 
+    // ── 6. Feats del Pokémon + sus bonos resueltos ────────────────
+    for (const feat of (feats || [])) {
+      if (!feat || !feat.feat_id) continue
+      const { rows: fIns } = await client.query(
+        `INSERT INTO ${TMPF} (id_master_pokemon, feat_id) VALUES ($1, $2)
+         RETURNING master_pokemon_feat_id`,
+        [id_mp, Number(feat.feat_id)]
+      )
+      const mfId = fIns[0].master_pokemon_feat_id
+      for (const b of (feat.bonos || [])) {
+        await client.query(
+          `INSERT INTO ${TMPFB}
+             (master_pokemon_feat_bonus_master_pokemon_feat_id,
+              master_pokemon_feat_bonus_type, master_pokemon_feat_bonus_llave, master_pokemon_feat_bonus_value)
+           VALUES ($1, $2, $3, $4)`,
+          [mfId, b.type ?? null, b.llave ?? null, b.value ?? null]
+        )
+      }
+    }
+
     return mp
   })
 }
@@ -404,7 +451,7 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
 // Edita un Pokémon del master: reemplaza los campos editables (apodo, género, naturaleza,
 // tipos, HP, stats base + bono de naturaleza, skills, movimientos y pasiva).
 const updatePokemon = async (id_master, id_master_pokemon, data) => {
-  const { apodo, genero, id_nature, type_1, type_2, hp, stats, skills, move_ids, id_abilitie } = data
+  const { apodo, genero, id_nature, type_1, type_2, hp, stats, skills, move_ids, id_abilitie, feats } = data
   const id_nat = id_nature != null ? Number(id_nature) : null
   const t1 = type_1 != null ? Number(type_1) : null
   const t2 = type_2 != null ? Number(type_2) : null
@@ -464,6 +511,26 @@ const updatePokemon = async (id_master, id_master_pokemon, data) => {
     await client.query(`DELETE FROM ${TMPP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
     if (id_abilitie) {
       await client.query(`INSERT INTO ${TMPP} (id_abilitie, id_master_pokemon) VALUES ($1,$2)`, [Number(id_abilitie), id_master_pokemon])
+    }
+
+    // feats: se reemplazan por completo (sus bonos caen por cascada)
+    if (Array.isArray(feats)) {
+      await client.query(`DELETE FROM ${TMPF} WHERE id_master_pokemon = $1`, [id_master_pokemon])
+      for (const feat of feats) {
+        if (!feat || !feat.feat_id) continue
+        const { rows: fIns } = await client.query(
+          `INSERT INTO ${TMPF} (id_master_pokemon, feat_id) VALUES ($1, $2) RETURNING master_pokemon_feat_id`,
+          [id_master_pokemon, Number(feat.feat_id)])
+        const mfId = fIns[0].master_pokemon_feat_id
+        for (const b of (feat.bonos || [])) {
+          await client.query(
+            `INSERT INTO ${TMPFB}
+               (master_pokemon_feat_bonus_master_pokemon_feat_id,
+                master_pokemon_feat_bonus_type, master_pokemon_feat_bonus_llave, master_pokemon_feat_bonus_value)
+             VALUES ($1, $2, $3, $4)`,
+            [mfId, b.type ?? null, b.llave ?? null, b.value ?? null])
+        }
+      }
     }
 
     const { rows: out } = await client.query(`SELECT * FROM ${TMP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
