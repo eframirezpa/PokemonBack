@@ -23,12 +23,16 @@ const TABIL = `"${SCHEMA}"."abilities"`
 const TBONDS = `"${SCHEMA}"."bonds"`
 const TPF   = `"${SCHEMA}"."personaje_feat"`
 const TPFB  = `"${SCHEMA}"."personaje_feat_bonus"`
+const TPPF  = `"${SCHEMA}"."personaje_pokemon_feat"`
+const TPPFB = `"${SCHEMA}"."personaje_pokemon_feat_bonus"`
 const TPAP  = `"${SCHEMA}"."personaje_armor_prof"`
 const TFB   = `"${SCHEMA}"."feats_bonus"`
 const TFEATS = `"${SCHEMA}"."feats"`
 const TSPEC = `"${SCHEMA}"."specializations"`
 const TPSB  = `"${SCHEMA}"."personaje_specializations_bonus"`
 const TEXP  = `"${SCHEMA}"."pokemon_experience_levels"`
+const TLEVELS = `"${SCHEMA}"."pokemon_levels"`
+const TPPI  = `"${SCHEMA}"."personaje_pokemon_pending_improvement"`
 
 // Stats válidos para los bonos de tipo 'stat'
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
@@ -401,7 +405,94 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
     [(Number(pp.pokemon_level) || 1) + 1]
   )
   const exp_next = expRows.length ? Number(expRows[0].e) : null
-  return { ...fixMedia(pp), stats: statsRows[0] || null, skills, moves, pasivas, exp_next }
+  // Feats del Pokémon (con bonos resueltos) — se muestran en cinturón/femputadora
+  const { rows: feats } = await query(
+    `SELECT pf.personaje_pokemon_feat_id, pf.personaje_feat_is_available AS is_available, f.*,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'id', b.personaje_pokemon_feat_bonus_id,
+                'type', b.personaje_pokemon_feat_bonus_type,
+                'llave', b.personaje_pokemon_feat_bonus_llave,
+                'value', b.personaje_pokemon_feat_bonus_value,
+                'is_available', b.personaje_pokemon_feat_bonus_is_available
+              ) ORDER BY b.personaje_pokemon_feat_bonus_id)
+              FROM ${TPPFB} b
+              WHERE b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id = pf.personaje_pokemon_feat_id
+            ), '[]') AS bonos
+     FROM ${TPPF} pf JOIN ${TFEATS} f ON f.feat_id = pf.feat_id
+     WHERE pf.id_trainer_pokemon = $1
+     ORDER BY pf.personaje_pokemon_feat_id`,
+    [id_personaje_pokemon])
+  return { ...fixMedia(pp), stats: statsRows[0] || null, skills, moves, pasivas, exp_next, feats }
+}
+
+// Suma experiencia a un Pokémon del entrenador. Sube máximo 1 nivel y, si sube,
+// registra/actualiza una mejora pendiente (personaje_pokemon_pending_improvement).
+const addPokemonExperience = async (id_personaje_pokemon, amountRaw) => {
+  const amount = Math.floor(Number(amountRaw))
+  if (!Number.isFinite(amount) || amount < 1) return { error: 'amount' }
+
+  const { rows: ppRows } = await query(
+    `SELECT pokemon_level, pokemon_experiencia FROM ${TPP} WHERE id_personaje_pokemon = $1`,
+    [id_personaje_pokemon])
+  const pp = ppRows[0]
+  if (!pp) return { error: 'notfound' }
+  const level = Number(pp.pokemon_level) || 1
+  const currentExp = Number(pp.pokemon_experiencia) || 0
+  if (level >= 20) return { error: 'max' } // nivel máximo, no sube más
+
+  // Umbrales por nivel
+  const { rows: expRows } = await query(`SELECT pokemon_level, pokemon_experience_needed FROM ${TEXP}`)
+  const threshold = new Map(expRows.map(r => [Number(r.pokemon_level), Number(r.pokemon_experience_needed)]))
+  // Máximo a agregar: hasta 1 menos del umbral de 2 niveles arriba (topado a nivel 20)
+  const capLevel = Math.min(level + 2, 20)
+  const maxThreshold = threshold.get(capLevel)
+  if (maxThreshold == null) return { error: 'nomargin' }
+  const maxAdd = maxThreshold - currentExp - 1
+  if (maxAdd < 1) return { error: 'nomargin' }
+  if (amount > maxAdd) return { error: 'toomuch', max: maxAdd }
+
+  const newExp = currentExp + amount
+  const nextT = threshold.get(level + 1)
+  const newLevel = (nextT != null && newExp >= nextT) ? Math.min(level + 1, 20) : level
+
+  return transaction(async (client) => {
+    await client.query(
+      `UPDATE ${TPP} SET pokemon_experiencia = $1, pokemon_level = $2 WHERE id_personaje_pokemon = $3`,
+      [newExp, newLevel, id_personaje_pokemon])
+
+    let leveled_up = false
+    if (newLevel > level) {
+      leveled_up = true
+      const { rows: lRows } = await client.query(
+        `SELECT pokemon_level_features FROM ${TLEVELS} WHERE pokemon_level = $1`, [newLevel])
+      const type = lRows[0]?.pokemon_level_features ?? null
+      // Un registro pendiente por Pokémon: si ya existe se actualiza, si no se inserta
+      const { rows: exist } = await client.query(
+        `SELECT personaje_pokemon_pending_improvement_id FROM ${TPPI}
+         WHERE personaje_pokemon_pending_improvement_pokemon_id = $1 LIMIT 1`,
+        [id_personaje_pokemon])
+      if (exist.length) {
+        await client.query(
+          `UPDATE ${TPPI} SET
+             personaje_pokemon_pending_improvement_lvl = $1,
+             personaje_pokemon_pending_improvement_type = $2,
+             personaje_pokemon_pending_improvement_applied = false
+           WHERE personaje_pokemon_pending_improvement_id = $3`,
+          [newLevel, type, exist[0].personaje_pokemon_pending_improvement_id])
+      } else {
+        await client.query(
+          `INSERT INTO ${TPPI}
+             (personaje_pokemon_pending_improvement_pokemon_id,
+              personaje_pokemon_pending_improvement_lvl,
+              personaje_pokemon_pending_improvement_type,
+              personaje_pokemon_pending_improvement_applied)
+           VALUES ($1, $2, $3, false)`,
+          [id_personaje_pokemon, newLevel, type])
+      }
+    }
+    return { pokemon_experiencia: newExp, pokemon_level: newLevel, leveled_up }
+  })
 }
 
 // Marca/desmarca un Pokémon como "en el cinturón". Máximo 6 en el cinturón.
@@ -1188,7 +1279,7 @@ module.exports = {
   findEquipo, addEquipo, updateEquipoCantidad,
   findArmor, addArmor, setArmorInUse,
   findWeapon, addWeapon, setWeaponInUse,
-  findPokemon, findPokemonDetail, setPokemonEnEquipo, setPokemonEnJuego, addPokemon,
+  findPokemon, findPokemonDetail, setPokemonEnEquipo, setPokemonEnJuego, addPokemon, addPokemonExperience,
   findFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,

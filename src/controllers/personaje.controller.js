@@ -110,6 +110,19 @@ const updatePokemonEnJuego = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /personaje/:id/pokemon/:idpp/experiencia  { cantidad } → suma experiencia al Pokémon
+const addPokemonExperience = async (req, res, next) => {
+  try {
+    const result = await svc.addPokemonExperience(req.params.idpp, req.body.cantidad)
+    if (result.error === 'notfound')  return res.status(404).json({ error: 'Pokémon no encontrado' })
+    if (result.error === 'amount')    return res.status(400).json({ error: 'Cantidad inválida' })
+    if (result.error === 'max')       return res.status(409).json({ error: 'El Pokémon ya está en el nivel máximo' })
+    if (result.error === 'nomargin')  return res.status(409).json({ error: 'No hay margen de experiencia para agregar' })
+    if (result.error === 'toomuch')   return res.status(409).json({ error: `El máximo a agregar es ${result.max}`, max: result.max })
+    res.json(result)
+  } catch (e) { next(e) }
+}
+
 const addPokemon = async (req, res, next) => {
   try {
     const { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie } = req.body
@@ -262,7 +275,7 @@ module.exports = {
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
-  getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon,
+  getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
   getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,
