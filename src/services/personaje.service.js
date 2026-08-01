@@ -1,4 +1,5 @@
 const { query, transaction, SCHEMA } = require('../config/db')
+const { effectiveMaxHp } = require('../lib/hp')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -165,6 +166,11 @@ const findParty = async (id_partida) => {
     [id_partida]
   )
   for (const c of chars) {
+    // HP máximo efectivo (base + mod CON + healing de feats/especialidades),
+    // igual que la ficha; personaje_current_hp es un valor absoluto de combate.
+    const full = await findFullById(c.id_personaje)
+    if (full) c.personaje_hp = effectiveMaxHp(full)
+
     const { rows: pks } = await query(
       `SELECT pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_hp, pp.pokemon_current_hp,
               pp.personaje_pokemon_exahust_lvl, pp.personaje_pokemon_dsts, pp.personaje_pokemon_dstf,
