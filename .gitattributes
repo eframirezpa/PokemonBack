@@ -1,0 +1,3 @@
+# Normaliza finales de línea a LF en el repo y en el árbol de trabajo.
+# Evita diffs falsos al trabajar entre Windows y Linux.
+* text=auto eol=lf
