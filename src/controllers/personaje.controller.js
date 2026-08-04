@@ -246,6 +246,8 @@ const addPokedollars = async (req, res, next) => {
     if (!Number.isFinite(cantidad) || cantidad <= 0) return res.status(400).json({ error: 'Cantidad inválida' })
     const result = await svc.addPokedollars(req.params.id, cantidad)
     if (result.error === 'notfound') return res.status(404).json({ error: 'Personaje no encontrado' })
+    if (result.error === 'toomuch')  return res.status(400).json({ error: `El máximo a agregar es ${result.max.toLocaleString()} ₽`, max: result.max })
+    if (result.error === 'maxtotal') return res.status(409).json({ error: `No puedes superar ${result.max.toLocaleString()} ₽`, max: result.max, pokedollars: result.pokedollars })
     res.json(result)
   } catch (e) { next(e) }
 }

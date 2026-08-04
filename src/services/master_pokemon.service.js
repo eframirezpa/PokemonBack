@@ -556,7 +556,133 @@ const removePokemon = async (id_master, id_master_pokemon) => {
   })
 }
 
+// ── Transferencia de un Pokémon del master a un entrenador (atraparlo) ───────
+// master_pokemon y personaje_pokemon tienen las mismas columnas salvo las dos
+// primeras (id propio y dueño), así que la copia se hace columna a columna.
+// Se listan de forma explícita: si el esquema cambia, falla de inmediato en vez
+// de copiar datos a ciegas.
+const TRANSFER_COLS = [
+  'id_pokemon', 'pokemon_apodo', 'pokemon_hp', 'pokemon_current_hp',
+  'pokemon_proficient', 'pokemon_initiative', 'pokemon_level', 'pokemon_hit_dice',
+  'pokemon_saving_throw_prof', 'pokemon_hit_dice_left', 'personaje_pokemon_ac',
+  'personaje_pokemon_nature', 'personaje_pokemon_stab', 'personaje_pokemon_bond',
+  'personaje_pokemon_speed1_name', 'personaje_pokemon_speed1_value',
+  'personaje_pokemon_speed2_name', 'personaje_pokemon_speed2_value',
+  'personaje_pokemon_speed3_name', 'personaje_pokemon_speed3_value',
+  'personaje_pokemon_speed4_name', 'personaje_pokemon_speed4_value',
+  'personaje_pokemon_genero', 'pokemon_is_shiny',
+  'pokemon_sense_1_name', 'pokemon_sense_1_value',
+  'pokemon_sense_2_name', 'pokemon_sense_2_value',
+  'personaje_pokemon_exahust_lvl', 'personaje_pokemon_dsts', 'personaje_pokemon_dstf',
+  'personaje_pokemon_type_1', 'personaje_pokemon_type_2', 'pokemon_experiencia',
+]
+
+const TPP    = `"${SCHEMA}"."personaje_pokemon"`
+const TPPS   = `"${SCHEMA}"."pokemon_stats"`
+const TPPSK  = `"${SCHEMA}"."pokemon_skills"`
+const TPPM   = `"${SCHEMA}"."personaje_pokemon_moves"`
+const TPPP   = `"${SCHEMA}"."personaje_pokemon_pasiva"`
+const TPPF   = `"${SCHEMA}"."personaje_pokemon_feat"`
+const TPPFB  = `"${SCHEMA}"."personaje_pokemon_feat_bonus"`
+const TPERS  = `"${SCHEMA}"."personaje"`
+
+const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) => {
+  return transaction(async (client) => {
+    const { rows: mp } = await client.query(
+      `SELECT mp.*, pk.pokemon_name FROM ${TMP} mp
+       JOIN ${TPOKEDEX} pk ON pk.pokemon_id = mp.id_pokemon
+       WHERE mp.id_master_pokemon = $1 AND mp.id_master = $2`,
+      [id_master_pokemon, id_master])
+    if (!mp.length) return { error: 'notfound' }
+    const origen = mp[0]
+
+    const { rows: per } = await client.query(
+      `SELECT nombre_personaje FROM ${TPERS} WHERE id_personaje = $1`, [id_personaje])
+    if (!per.length) return { error: 'personajenotfound' }
+
+    // ── 1. El Pokémon. Llega a la femputadora (no al cinturón, que tiene tope de 6)
+    //       y sin invocar, para no chocar con el Pokémon que el trainer tenga en juego.
+    const cols = TRANSFER_COLS.join(', ')
+    const refs = TRANSFER_COLS.map(c => `o.${c}`).join(', ')
+    const { rows: ins } = await client.query(
+      `INSERT INTO ${TPP} (id_personaje, pokemon_en_equipo, personaje_pokemon_is_in_game, ${cols})
+       SELECT $2, false, false, ${refs} FROM ${TMP} o WHERE o.id_master_pokemon = $1
+       RETURNING id_personaje_pokemon`,
+      [id_master_pokemon, id_personaje])
+    const nuevoId = ins[0].id_personaje_pokemon
+
+    // ── 2. Stats
+    await client.query(
+      `INSERT INTO ${TPPS} (id_personaje_pokemon, pokemon_dex, pokemon_str, pokemon_con,
+         pokemon_int, pokemon_wis, pokemon_cha, pokemon_dex_bonus, pokemon_str_bonus,
+         pokemon_con_bonus, pokemon_int_bonus, pokemon_wis_bonus, pokemon_cha_bonus,
+         pokemon_stats_prof, pokemon_stats_dex_prof, pokemon_stats_int_prof,
+         pokemon_stats_str_prof, pokemon_stats_cha_prof, pokemon_stats_wis_prof, pokemon_stats_con_prof)
+       SELECT $2, s.pokemon_dex, s.pokemon_str, s.pokemon_con, s.pokemon_int, s.pokemon_wis,
+              s.pokemon_cha, s.pokemon_dex_bonus, s.pokemon_str_bonus, s.pokemon_con_bonus,
+              s.pokemon_int_bonus, s.pokemon_wis_bonus, s.pokemon_cha_bonus,
+              s.pokemon_stats_prof, s.pokemon_stats_dex_prof, s.pokemon_stats_int_prof,
+              s.pokemon_stats_str_prof, s.pokemon_stats_cha_prof, s.pokemon_stats_wis_prof, s.pokemon_stats_con_prof
+       FROM ${TMPS} s WHERE s.id_master_pokemon = $1`,
+      [id_master_pokemon, nuevoId])
+
+    // ── 3. Skills
+    await client.query(
+      `INSERT INTO ${TPPSK} (id_personaje_pokemon, id_skill, pokemon_skill_pref, pokemon_skill_expert)
+       SELECT $2, k.id_skill, k.pokemon_skill_pref, k.pokemon_skill_expert
+       FROM ${TMPSK} k WHERE k.id_master_pokemon = $1`,
+      [id_master_pokemon, nuevoId])
+
+    // ── 4. Movimientos
+    await client.query(
+      `INSERT INTO ${TPPM} (personaje_pokemon_moves_personaje_pokemon_id, personaje_pokemon_moves_move_id)
+       SELECT $2, m.master_pokemon_moves_move_id
+       FROM ${TMPM} m WHERE m.master_pokemon_moves_master_pokemon_id = $1`,
+      [id_master_pokemon, nuevoId])
+
+    // ── 5. Pasivas
+    await client.query(
+      `INSERT INTO ${TPPP} (id_personaje_pokemon, id_abilitie)
+       SELECT $2, p.id_abilitie FROM ${TMPP} p WHERE p.id_master_pokemon = $1`,
+      [id_master_pokemon, nuevoId])
+
+    // ── 6. Feats con sus bonos: hay que ir uno a uno para reenlazar los bonos al feat nuevo
+    const { rows: feats } = await client.query(
+      `SELECT master_pokemon_feat_id, feat_id, personaje_feat_is_available
+       FROM ${TMPF} WHERE id_master_pokemon = $1 ORDER BY master_pokemon_feat_id`,
+      [id_master_pokemon])
+    for (const f of feats) {
+      const { rows: nf } = await client.query(
+        `INSERT INTO ${TPPF} (id_trainer_pokemon, feat_id, personaje_feat_is_available)
+         VALUES ($1, $2, $3) RETURNING personaje_pokemon_feat_id`,
+        [nuevoId, f.feat_id, f.personaje_feat_is_available])
+      await client.query(
+        `INSERT INTO ${TPPFB} (personaje_pokemon_feat_bonus_personaje_pokemon_feat_id,
+           personaje_pokemon_feat_bonus_type, personaje_pokemon_feat_bonus_llave,
+           personaje_pokemon_feat_bonus_value, personaje_pokemon_feat_bonus_is_available)
+         SELECT $2, b.master_pokemon_feat_bonus_type, b.master_pokemon_feat_bonus_llave,
+                b.master_pokemon_feat_bonus_value, b.master_pokemon_feat_bonus_is_available
+         FROM ${TMPFB} b WHERE b.master_pokemon_feat_bonus_master_pokemon_feat_id = $1`,
+        [f.master_pokemon_feat_id, nf[0].personaje_pokemon_feat_id])
+    }
+
+    // ── 7. Borrar del master. Las pasivas no tienen ON DELETE CASCADE, van aparte;
+    //       feats, bonos, moves, skills y stats caen solos con el registro padre.
+    await client.query(`DELETE FROM ${TMPP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
+    await client.query(`DELETE FROM ${TMP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
+
+    return {
+      ok: true,
+      id_personaje_pokemon: nuevoId,
+      pokemon_name: origen.pokemon_name,
+      pokemon_apodo: origen.pokemon_apodo,
+      nombre_personaje: per[0].nombre_personaje,
+    }
+  })
+}
+
 module.exports = {
   findPokemon, findPokemonDetail, updatePokemonCombate, levelPreview,
   setPokemonEnEquipo, setPokemonEnJuego, addPokemon, updatePokemon, removePokemon,
+  transferToPersonaje,
 }

@@ -83,4 +83,35 @@ function effectiveMaxHp(full) {
   return (Number(full?.personaje_hp) || 0) + hpExtra(full)
 }
 
-module.exports = { hpExtra, effectiveMaxHp }
+// ── HP de los Pokémon del entrenador ─────────────────────────────────────────
+// pokemon_hp guarda la base del pokédex más las tiradas de dado acumuladas al
+// subir de nivel. El máximo mostrado le suma el modificador de CON por cada
+// nivel; es un cálculo en vivo, nunca se persiste.
+// pokemon_current_hp es un valor absoluto de combate, igual que en el personaje.
+
+// CON total del Pokémon: base + bonus de la tabla + bonos de stat de sus feats
+function pokemonCon(stats, feats) {
+  let featAdd = 0
+  for (const f of (feats || [])) {
+    for (const b of (f.bonos || [])) {
+      if (norm(b.type) === 'stat' && norm(b.llave) === 'con') featAdd += Number(b.value) || 0
+    }
+  }
+  return (Number(stats?.pokemon_con) || 0) + (Number(stats?.pokemon_con_bonus) || 0) + featAdd
+}
+
+// Suma en vivo al HP máximo: modificador de CON por cada nivel.
+// Un CON bajo (modificador negativo) no resta vida: el piso es 0, así que el
+// máximo nunca queda por debajo del pokemon_hp guardado.
+function pokemonHpExtra({ stats, feats, level }) {
+  const lvl = Math.max(1, Number(level) || 1)
+  const mod = Math.max(0, Math.floor((pokemonCon(stats, feats) - 10) / 2))
+  return mod * lvl
+}
+
+// Máximo efectivo de un Pokémon = pokemon_hp guardado + modCON × nivel
+function effectivePokemonMaxHp(pp, stats, feats) {
+  return (Number(pp?.pokemon_hp) || 0) + pokemonHpExtra({ stats, feats, level: pp?.pokemon_level })
+}
+
+module.exports = { hpExtra, effectiveMaxHp, pokemonCon, pokemonHpExtra, effectivePokemonMaxHp }

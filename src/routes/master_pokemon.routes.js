@@ -13,6 +13,7 @@ router.patch('/:idmp/combate',     authenticate, ctrl.updatePokemonCombate)
 router.patch('/:idmp/en-equipo',   authenticate, ctrl.updatePokemonEnEquipo)
 router.patch('/:idmp/en-juego',    authenticate, ctrl.updatePokemonEnJuego)
 router.delete('/:idmp',            authenticate, ctrl.removePokemon)
+router.post('/:idmp/transfer',     authenticate, ctrl.transferPokemon)
 
 // Feats del Pokémon del master
 router.get('/:idmp/feats',                     authenticate, featCtrl.getFeats)

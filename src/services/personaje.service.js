@@ -1,5 +1,5 @@
 const { query, transaction, SCHEMA } = require('../config/db')
-const { effectiveMaxHp } = require('../lib/hp')
+const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -34,6 +34,12 @@ const TPSB  = `"${SCHEMA}"."personaje_specializations_bonus"`
 const TEXP  = `"${SCHEMA}"."pokemon_experience_levels"`
 const TLEVELS = `"${SCHEMA}"."pokemon_levels"`
 const TPPI  = `"${SCHEMA}"."personaje_pokemon_pending_improvement"`
+
+// Topes de mochila y billetera (espejo de front/src/components/Mochila.jsx)
+const MIN_ITEM_QTY = 1                  // mínimo por item al agregarlo
+const MAX_ITEM_QTY = 999                // máximo por item (tope del stack)
+const MAX_POKEDOLLARS_ADD = 50000000    // máximo a agregar de una vez
+const MAX_POKEDOLLARS_TOTAL = 999999999 // máximo que se puede llegar a tener
 
 // Stats válidos para los bonos de tipo 'stat'
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
@@ -133,6 +139,38 @@ const analyzeArmorProfBonus = (b) => {
 
 // Separador para unir varios textos capturados en personaje_feat_bonus_value (Unit Separator, no se puede teclear)
 const TEXT_SEP = String.fromCharCode(31)
+
+// Llaves de bono que otorgan proficiencia de arma ("Weapon Prof", "Martial Weapon Prof", …)
+const isWeaponProfKey = (llave) => {
+  const k = (llave || '').toLowerCase()
+  return k.includes('weapon') && k.includes('prof')
+}
+
+// Marca como proficientes las armas elegidas en un feat, dejando registrado el feat
+// de origen para poder revocarla si deja de cumplir su prerequisito.
+// Si el arma ya era proficiente no se toca: una proficiencia permanente (la de la
+// creación del personaje) nunca debe degradarse a revocable.
+const applyWeaponProfs = async (client, id_personaje, nombres, personaje_feat_id) => {
+  for (const nombre of [...new Set(nombres.map(n => (n || '').trim()).filter(Boolean))]) {
+    const { rows: wt } = await client.query(
+      `SELECT weapon_type_id FROM ${TWEAPON} WHERE lower(weapon_type_name) = lower($1) LIMIT 1`, [nombre])
+    if (!wt.length) continue // el texto no corresponde a un arma del catálogo
+    const id_weapon = wt[0].weapon_type_id
+    const { rowCount } = await client.query(
+      `UPDATE ${TW} SET personaje_weapon_prof = true, personaje_weapon_prof_feat_id = $3
+       WHERE id_personaje = $1 AND id_weapon = $2 AND personaje_weapon_prof = false`,
+      [id_personaje, id_weapon, personaje_feat_id])
+    if (!rowCount) {
+      const { rows: existe } = await client.query(
+        `SELECT 1 FROM ${TW} WHERE id_personaje = $1 AND id_weapon = $2 LIMIT 1`, [id_personaje, id_weapon])
+      if (!existe.length) {
+        await client.query(
+          `INSERT INTO ${TW} (id_weapon, id_personaje, personaje_weapon_in_use, personaje_weapon_prof, personaje_weapon_prof_feat_id)
+           VALUES ($1, $2, false, true, $3)`, [id_weapon, id_personaje, personaje_feat_id])
+      }
+    }
+  }
+}
 // Analiza un feat_bonus de tipo 'text'. valor = cantidad de cajas de texto a capturar.
 const analyzeTextBonus = (b) => {
   if ((b.type || '').toLowerCase().trim() !== 'text') return null
@@ -153,6 +191,25 @@ const getParticipacion = async (id_partida, user_id) => {
 
 // Party: todos los personajes de una partida (con su user_id) + sus Pokémon del cinturón.
 // Solo lectura, para el panel "Party".
+// Stats y feats (con bonos) de un Pokémon del entrenador: lo que necesita el
+// cálculo del HP máximo efectivo.
+const pokemonStatsAndFeats = async (id_personaje_pokemon) => {
+  const { rows: st } = await query(
+    `SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
+  const { rows: feats } = await query(
+    `SELECT COALESCE((
+              SELECT json_agg(json_build_object(
+                'type',  b.personaje_pokemon_feat_bonus_type,
+                'llave', b.personaje_pokemon_feat_bonus_llave,
+                'value', b.personaje_pokemon_feat_bonus_value
+              ))
+              FROM ${TPPFB} b
+              WHERE b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id = pf.personaje_pokemon_feat_id
+            ), '[]') AS bonos
+     FROM ${TPPF} pf WHERE pf.id_trainer_pokemon = $1`, [id_personaje_pokemon])
+  return { stats: st[0] || null, feats }
+}
+
 const findParty = async (id_partida) => {
   const { rows: chars } = await query(
     `SELECT p.id_personaje, up.user_id, p.nombre_personaje,
@@ -173,6 +230,7 @@ const findParty = async (id_partida) => {
 
     const { rows: pks } = await query(
       `SELECT pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_hp, pp.pokemon_current_hp,
+              pp.pokemon_level,
               pp.personaje_pokemon_exahust_lvl, pp.personaje_pokemon_dsts, pp.personaje_pokemon_dstf,
               pp.pokemon_is_shiny,
               pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pk.pokemon_media_main
@@ -181,6 +239,11 @@ const findParty = async (id_partida) => {
        ORDER BY pp.id_personaje_pokemon`,
       [c.id_personaje]
     )
+    // Máximo efectivo del Pokémon (base guardada + modCON × nivel), igual que la ficha
+    for (const pk of pks) {
+      const { stats, feats } = await pokemonStatsAndFeats(pk.id_personaje_pokemon)
+      pk.pokemon_hp = effectivePokemonMaxHp(pk, stats, feats)
+    }
     c.pokemons = pks.map(fixMedia)
   }
   return chars
@@ -429,7 +492,11 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
      WHERE pf.id_trainer_pokemon = $1
      ORDER BY pf.personaje_pokemon_feat_id`,
     [id_personaje_pokemon])
-  return { ...fixMedia(pp), stats: statsRows[0] || null, skills, moves, pasivas, exp_next, feats }
+  // El máximo mostrado suma el modificador de CON por cada nivel (cálculo en vivo).
+  // pokemon_current_hp queda intacto: es un valor absoluto de combate.
+  const stats = statsRows[0] || null
+  const pokemon_hp = effectivePokemonMaxHp(pp, stats, feats)
+  return { ...fixMedia(pp), pokemon_hp, stats, skills, moves, pasivas, exp_next, feats }
 }
 
 // Suma experiencia a un Pokémon del entrenador. Sube máximo 1 nivel y, si sube,
@@ -450,11 +517,13 @@ const addPokemonExperience = async (id_personaje_pokemon, amountRaw) => {
   // Umbrales por nivel
   const { rows: expRows } = await query(`SELECT pokemon_level, pokemon_experience_needed FROM ${TEXP}`)
   const threshold = new Map(expRows.map(r => [Number(r.pokemon_level), Number(r.pokemon_experience_needed)]))
-  // Máximo a agregar: hasta 1 menos del umbral de 2 niveles arriba (topado a nivel 20)
+  // Máximo a agregar: hasta 1 menos del umbral de 2 niveles arriba, para no subir
+  // 2 niveles de una sola vez. A partir de nivel 19 ese umbral ya es el del 20 y
+  // no hay un 21 al que saltarse, así que se permite alcanzarlo exacto.
   const capLevel = Math.min(level + 2, 20)
   const maxThreshold = threshold.get(capLevel)
   if (maxThreshold == null) return { error: 'nomargin' }
-  const maxAdd = maxThreshold - currentExp - 1
+  const maxAdd = maxThreshold - currentExp - (level + 2 > 20 ? 0 : 1)
   if (maxAdd < 1) return { error: 'nomargin' }
   if (amount > maxAdd) return { error: 'toomuch', max: maxAdd }
 
@@ -526,7 +595,8 @@ const isOneHanded = (handUse) => (handUse || '').toLowerCase().includes('one-han
 
 const findWeapon = async (id_personaje) => {
   const { rows } = await query(
-    `SELECT pw.id_personaje_weapon, pw.personaje_weapon_in_use, w.*
+    `SELECT pw.id_personaje_weapon, pw.personaje_weapon_in_use, pw.personaje_weapon_prof,
+            pw.personaje_weapon_prof_feat_id, w.*
      FROM ${TW} pw JOIN ${TWEAPON} w ON w.weapon_type_id = pw.id_weapon
      WHERE pw.id_personaje = $1
      ORDER BY pw.id_personaje_weapon`,
@@ -535,10 +605,12 @@ const findWeapon = async (id_personaje) => {
   return rows
 }
 
+// Alta desde la mochila: sin proficiencia. Solo la dan la creación del personaje
+// y los feats que otorgan "weapon prof".
 const addWeapon = async (id_personaje, id_weapon) => {
   const { rows } = await query(
-    `INSERT INTO ${TW} (id_weapon, id_personaje, personaje_weapon_in_use)
-     VALUES ($1, $2, false) RETURNING *`,
+    `INSERT INTO ${TW} (id_weapon, id_personaje, personaje_weapon_in_use, personaje_weapon_prof)
+     VALUES ($1, $2, false, false) RETURNING *`,
     [id_weapon, id_personaje]
   )
   return rows[0]
@@ -589,7 +661,7 @@ const setWeaponInUse = async (id_personaje, id_personaje_weapon, in_use) => {
 const findEquipo = async (id_personaje) => {
   const { rows } = await query(
     `SELECT eq.id_personaje_equipo, eq.id_item, eq.personaje_equipo_cantidad AS cantidad,
-            i.item_name, i.item_type, i.item_description, i.item_cost
+            i.item_name, i.item_type, i.item_description, i.item_cost, i.item_media_sprite
      FROM ${TEQ} eq
      JOIN "${SCHEMA}"."items" i ON i.item_id = eq.id_item
      WHERE eq.id_personaje = $1
@@ -601,16 +673,18 @@ const findEquipo = async (id_personaje) => {
 
 // Agrega un item a la mochila (suma a la cantidad si ya existe)
 const addEquipo = async (id_personaje, id_item, cantidad) => {
-  const c = Math.max(1, Number(cantidad) || 1)
+  const c = Math.min(MAX_ITEM_QTY, Math.max(MIN_ITEM_QTY, Math.floor(Number(cantidad)) || MIN_ITEM_QTY))
   const { rows: ex } = await query(
     `SELECT id_personaje_equipo, personaje_equipo_cantidad FROM ${TEQ}
      WHERE id_personaje = $1 AND id_item = $2`,
     [id_personaje, id_item]
   )
   if (ex[0]) {
+    // El stack no puede pasar del tope, aunque se agregue varias veces
+    const total = Math.min(MAX_ITEM_QTY, (Number(ex[0].personaje_equipo_cantidad) || 0) + c)
     const { rows } = await query(
       `UPDATE ${TEQ} SET personaje_equipo_cantidad = $1 WHERE id_personaje_equipo = $2 RETURNING *`,
-      [ex[0].personaje_equipo_cantidad + c, ex[0].id_personaje_equipo]
+      [total, ex[0].id_personaje_equipo]
     )
     return rows[0]
   }
@@ -624,7 +698,7 @@ const addEquipo = async (id_personaje, id_item, cantidad) => {
 
 // Actualiza la cantidad de un item (no permite negativos)
 const updateEquipoCantidad = async (id_personaje_equipo, cantidad) => {
-  const c = Math.max(0, Number(cantidad) || 0)
+  const c = Math.min(MAX_ITEM_QTY, Math.max(0, Math.floor(Number(cantidad)) || 0))
   const { rows } = await query(
     `UPDATE ${TEQ} SET personaje_equipo_cantidad = $1 WHERE id_personaje_equipo = $2 RETURNING *`,
     [c, id_personaje_equipo]
@@ -638,10 +712,12 @@ const findFullById = async (id_personaje) => {
     `SELECT p.*, o.origin_name, o.origin_feat_id, b.background_name, b.background_feat_id,
             b.background_tool_proficiencies_name, b.background_tool_proficiencies_values,
             b.background_armor_proficiencies_value_1, b.background_armor_proficiencies_value_2,
-            b.background_armor_proficiencies_value_3, b.background_armor_proficiencies_value_4
+            b.background_armor_proficiencies_value_3, b.background_armor_proficiencies_value_4,
+            b.background_tool_item_id, ti.item_name AS background_tool_item_name
      FROM ${T} p
      LEFT JOIN "${SCHEMA}"."origins"     o ON o.origin_id     = p.personaje_origin
      LEFT JOIN "${SCHEMA}"."backgrounds" b ON b.background_id = p.personaje_background
+     LEFT JOIN "${SCHEMA}"."items"      ti ON ti.item_id      = b.background_tool_item_id
      WHERE p.id_personaje = $1`,
     [id_personaje]
   )
@@ -685,7 +761,7 @@ const findFullById = async (id_personaje) => {
     [id_personaje]
   )
   const { rows: weaponRows } = await query(
-    `SELECT w.* FROM ${TW} pw
+    `SELECT pw.id_personaje_weapon, pw.personaje_weapon_prof, pw.personaje_weapon_prof_feat_id, w.* FROM ${TW} pw
      JOIN ${TWEAPON} w ON w.weapon_type_id = pw.id_weapon
      WHERE pw.id_personaje = $1 AND pw.personaje_weapon_in_use = true
      ORDER BY pw.id_personaje_weapon`,
@@ -817,6 +893,7 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
 
   const rowsToInsert = [] // → personaje_feat_bonus
   const armorRows    = [] // → personaje_armor_prof
+  const weaponProfNames = [] // nombres de arma elegidos en bonos "weapon prof"
   for (let i = 0; i < bonuses.length; i++) {
     const b  = bonuses[i]
     const st = analyzeStatBonus(b)
@@ -869,6 +946,8 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
       if (!Array.isArray(chosen) || chosen.length !== tx.count) return { error: 'choices' }
       const texts = chosen.map(c => (c.text ?? '').toString())
       rowsToInsert.push({ type: b.type, llave: b.llave, value: texts.join(TEXT_SEP) })
+      // Los feats de "weapon prof" además marcan el arma como proficiente en personaje_weapon
+      if (isWeaponProfKey(b.llave)) weaponProfNames.push(...texts)
       continue
     }
 
@@ -915,6 +994,7 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
         [id_personaje, a, pfId]
       )
     }
+    if (weaponProfNames.length) await applyWeaponProfs(client, id_personaje, weaponProfNames, pfId)
     return { personaje_feat_id: pfId, bonos: rowsToInsert, armor_profs: armorRows, ...feat }
   })
 }
@@ -978,11 +1058,23 @@ const setFeatAvailable = async (id_personaje, personaje_feat_id, is_available) =
 
 // Elimina un feat extra del personaje (personaje_feat). Devuelve true si se borró.
 const removeFeat = async (id_personaje, personaje_feat_id) => {
-  const { rowCount } = await query(
-    `DELETE FROM ${TPF} WHERE personaje_feat_id = $1 AND personaje_id = $2`,
-    [personaje_feat_id, id_personaje]
-  )
-  return rowCount > 0
+  return transaction(async (client) => {
+    // La proficiencia de arma que otorgó este feat se pierde con él. Hay que
+    // limpiarla a mano: la FK es ON DELETE SET NULL y un prof_feat_id nulo
+    // significa "viene de la creación del personaje", o sea permanente.
+    // No se borra la fila del arma: el personaje la sigue teniendo, solo deja
+    // de ser proficiente con ella.
+    await client.query(
+      `UPDATE ${TW} SET personaje_weapon_prof = false, personaje_weapon_prof_feat_id = NULL
+       WHERE id_personaje = $1 AND personaje_weapon_prof_feat_id = $2`,
+      [id_personaje, personaje_feat_id]
+    )
+    const { rowCount } = await client.query(
+      `DELETE FROM ${TPF} WHERE personaje_feat_id = $1 AND personaje_id = $2`,
+      [personaje_feat_id, id_personaje]
+    )
+    return rowCount > 0
+  })
 }
 
 // Descuenta pokédollars al personaje. Requiere tener pokédollars suficientes (>= cantidad a gastar).
@@ -1001,9 +1093,15 @@ const spendPokedollars = async (id_personaje, cantidad) => {
 // Suma pokédollars al personaje. Devuelve { error } o { pokedollars } con el nuevo saldo.
 const addPokedollars = async (id_personaje, cantidad) => {
   const amt = Math.max(0, Math.floor(Number(cantidad) || 0))
+  if (amt > MAX_POKEDOLLARS_ADD) return { error: 'toomuch', max: MAX_POKEDOLLARS_ADD }
   const { rows } = await query(`SELECT pokedollars_personaje FROM ${T} WHERE id_personaje = $1`, [id_personaje])
   if (!rows[0]) return { error: 'notfound' }
-  const nuevo = (Number(rows[0].pokedollars_personaje) || 0) + amt
+  const actual = Number(rows[0].pokedollars_personaje) || 0
+  // El saldo no puede pasar del tope, aunque cada operación esté dentro del límite
+  if (actual + amt > MAX_POKEDOLLARS_TOTAL) {
+    return { error: 'maxtotal', max: MAX_POKEDOLLARS_TOTAL, pokedollars: actual }
+  }
+  const nuevo = actual + amt
   await query(`UPDATE ${T} SET pokedollars_personaje = $1 WHERE id_personaje = $2`, [nuevo, id_personaje])
   return { pokedollars: nuevo }
 }
@@ -1085,10 +1183,11 @@ const create = async (id_partida, user_id, data) => {
     }
 
     // ── Arma equipada ─────────────────────────────────────────────
+    // El arma elegida al crear el personaje sí otorga proficiencia
     if (data.id_weapon) {
       await client.query(
-        `INSERT INTO ${TW} (id_weapon, id_personaje, personaje_weapon_in_use)
-         VALUES ($1, $2, true)`,
+        `INSERT INTO ${TW} (id_weapon, id_personaje, personaje_weapon_in_use, personaje_weapon_prof)
+         VALUES ($1, $2, true, true)`,
         [data.id_weapon, id_personaje]
       )
     }

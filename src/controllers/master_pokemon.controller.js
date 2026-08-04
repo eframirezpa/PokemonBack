@@ -94,7 +94,21 @@ const removePokemon = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// POST /api/master/pokemon/:idmp/transfer  { id_personaje }
+// Traspasa el Pokémon (y todo lo suyo) al entrenador y lo borra del master.
+const transferPokemon = async (req, res, next) => {
+  try {
+    const id_personaje = Number(req.body.id_personaje)
+    if (!id_personaje) return res.status(400).json({ error: 'id_personaje requerido' })
+    const r = await svc.transferToPersonaje(req.user.user_id, req.params.idmp, id_personaje)
+    if (r.error === 'notfound')           return res.status(404).json({ error: 'Pokémon no encontrado' })
+    if (r.error === 'personajenotfound')  return res.status(404).json({ error: 'Personaje no encontrado' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
 module.exports = {
   getPokemon, getPokemonDetail, getLevelPreview, addPokemon, updatePokemon,
   updatePokemonCombate, updatePokemonEnEquipo, updatePokemonEnJuego, removePokemon,
+  transferPokemon,
 }

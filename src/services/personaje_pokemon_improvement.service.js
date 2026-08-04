@@ -16,6 +16,8 @@ const TEVO    = `"${SCHEMA}"."evolution"`
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
 const STRUGGLE_ID = 705
 const ASI_TYPE = 'ability score improvement'
+// "d10" → 10. El dado de golpe vive en la tabla pokemon como texto.
+const hitDiceMax = s => { const m = /(\d+)/.exec(s || ''); return m ? Number(m[1]) : 0 }
 const splitList = s => (s || '').split(',').map(x => x.trim()).filter(Boolean)
 const norm = s => (s || '').toLowerCase().trim()
 // Columnas de "New Moves" por nivel en la tabla pokemon
@@ -52,7 +54,7 @@ const listPending = async (id_personaje) => {
             pi.personaje_pokemon_pending_improvement_type    AS type,
             pp.pokemon_apodo, pp.id_pokemon, pp.pokemon_level,
             pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny,
-            pp.pokemon_is_shiny
+            pk.pokemon_hit_dice, pp.pokemon_is_shiny
      FROM ${TPPI} pi
      JOIN ${TPP} pp ON pp.id_personaje_pokemon = pi.personaje_pokemon_pending_improvement_pokemon_id
      JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
@@ -68,6 +70,9 @@ const listPending = async (id_personaje) => {
       id: p.id, id_personaje_pokemon: p.idpp, apodo: p.pokemon_apodo,
       name: p.pokemon_name, level, type: p.type, is_asi: isAsi,
       sprite: (p.pokemon_is_shiny && p.pokemon_media_sprite_shiny) ? p.pokemon_media_sprite_shiny : p.pokemon_media_sprite,
+      // Dado de golpe para la tirada de HP del nivel (ej. "d10" y 10)
+      hit_dice: p.pokemon_hit_dice || null,
+      hit_dice_max: hitDiceMax(p.pokemon_hit_dice),
     }
     if (isAsi) {
       const { rows: st } = await query(`SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [p.idpp])
@@ -77,6 +82,10 @@ const listPending = async (id_personaje) => {
          FROM ${TPSK} ps JOIN ${TSKILLS} s ON s.skill_id = ps.id_skill
          WHERE ps.id_personaje_pokemon = $1 ORDER BY ps.id_pokemon_skills`, [p.idpp])
       item.skills = skills
+      // Feats que el Pokémon ya tiene: los no repetibles no deben volver a ofrecerse
+      const { rows: owned } = await query(
+        `SELECT feat_id FROM ${TPPF} WHERE id_trainer_pokemon = $1`, [p.idpp])
+      item.owned_feat_ids = owned.map(f => f.feat_id)
       const line = await evolutionLine(p.id_pokemon)
       item.evolution_line = line
       item.points = pointsForLine(line)
@@ -107,9 +116,10 @@ const findPending = async (id_personaje, id_personaje_pokemon, wantAsi) => {
   const { rows } = await query(
     `SELECT pi.personaje_pokemon_pending_improvement_id AS id,
             pi.personaje_pokemon_pending_improvement_type AS type,
-            pp.id_pokemon, pp.pokemon_level
+            pp.id_pokemon, pp.pokemon_level, pk.pokemon_hit_dice
      FROM ${TPPI} pi
      JOIN ${TPP} pp ON pp.id_personaje_pokemon = pi.personaje_pokemon_pending_improvement_pokemon_id
+     JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
      WHERE pi.personaje_pokemon_pending_improvement_pokemon_id = $1
        AND pp.id_personaje = $2
        AND pi.personaje_pokemon_pending_improvement_applied = false
@@ -121,10 +131,29 @@ const findPending = async (id_personaje, id_personaje_pokemon, wantAsi) => {
   return row
 }
 
+// Valida la tirada del dado de golpe del nivel: entero entre 1 y el dado del Pokémon.
+const checkHpRoll = (pend, rollRaw) => {
+  const max = hitDiceMax(pend.pokemon_hit_dice)
+  const roll = Math.floor(Number(rollRaw))
+  if (!Number.isFinite(roll) || roll < 1 || (max > 0 && roll > max)) return { error: 'hproll', max }
+  return { roll }
+}
+
+// Suma la tirada al HP guardado. El máximo y el actual suben lo mismo: ganar vida
+// máxima al subir de nivel la otorga de inmediato.
+const applyHpRoll = (client, id_personaje_pokemon, roll) =>
+  client.query(
+    `UPDATE ${TPP} SET pokemon_hp = COALESCE(pokemon_hp, 0) + $1,
+                       pokemon_current_hp = COALESCE(pokemon_current_hp, 0) + $1
+     WHERE id_personaje_pokemon = $2`,
+    [roll, id_personaje_pokemon])
+
 // Confirma el flujo de movimientos: reemplaza el moveset (Struggle siempre + hasta 4).
-const confirmMoves = async (id_personaje, id_personaje_pokemon, moveIdsRaw) => {
+const confirmMoves = async (id_personaje, id_personaje_pokemon, moveIdsRaw, hpRollRaw) => {
   const pend = await findPending(id_personaje, id_personaje_pokemon, false)
   if (!pend) return { error: 'notfound' }
+  const hp = checkHpRoll(pend, hpRollRaw)
+  if (hp.error) return hp
   const ids = [...new Set((moveIdsRaw || []).map(Number).filter(Boolean))].filter(id => id !== STRUGGLE_ID)
   if (ids.length > 4) return { error: 'toomany' }
   // Validar que estén dentro del pool disponible
@@ -143,18 +172,21 @@ const confirmMoves = async (id_personaje, id_personaje_pokemon, moveIdsRaw) => {
         `INSERT INTO ${TPPM} (personaje_pokemon_moves_move_id, personaje_pokemon_moves_personaje_pokemon_id)
          VALUES ($1, $2)`, [mid, id_personaje_pokemon])
     }
+    await applyHpRoll(client, id_personaje_pokemon, hp.roll)
     await client.query(
       `UPDATE ${TPPI} SET personaje_pokemon_pending_improvement_applied = true
        WHERE personaje_pokemon_pending_improvement_id = $1`, [pend.id])
-    return { ok: true }
+    return { ok: true, hp_roll: hp.roll }
   })
 }
 
 // Confirma el flujo ASI: aplica los puntos a stats base (tope 20/22) y persiste un feat.
 // statAdds = { dex, str, ... } enteros ≥ 0; feat = { feat_id, bonos:[{type,llave,value}] } | null
-const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat) => {
+const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hpRollRaw) => {
   const pend = await findPending(id_personaje, id_personaje_pokemon, true)
   if (!pend) return { error: 'notfound' }
+  const hp = checkHpRoll(pend, hpRollRaw)
+  if (hp.error) return hp
   const level = Number(pend.pokemon_level) || 1
   const line = await evolutionLine(pend.id_pokemon)
   const points = pointsForLine(line)
@@ -168,6 +200,13 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat) =>
   if (hasFeat) {
     const { rows: fRows } = await query(`SELECT feat_is_repeatable FROM ${TFEATS} WHERE feat_id = $1`, [Number(feat.feat_id)])
     if (!fRows.length) return { error: 'featnotfound' }
+    // Un feat no repetible no puede asignarse dos veces al mismo Pokémon
+    if (Number(fRows[0].feat_is_repeatable) !== 1) {
+      const { rows: dup } = await query(
+        `SELECT 1 FROM ${TPPF} WHERE id_trainer_pokemon = $1 AND feat_id = $2 LIMIT 1`,
+        [id_personaje_pokemon, Number(feat.feat_id)])
+      if (dup.length) return { error: 'duplicate' }
+    }
   }
 
   const cap = level >= 20 ? 22 : 20
@@ -200,10 +239,11 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat) =>
           [pfId, b.type ?? null, b.llave ?? null, b.value ?? null])
       }
     }
+    await applyHpRoll(client, id_personaje_pokemon, hp.roll)
     await client.query(
       `UPDATE ${TPPI} SET personaje_pokemon_pending_improvement_applied = true
        WHERE personaje_pokemon_pending_improvement_id = $1`, [pend.id])
-    return { ok: true }
+    return { ok: true, hp_roll: hp.roll }
   })
 }
 

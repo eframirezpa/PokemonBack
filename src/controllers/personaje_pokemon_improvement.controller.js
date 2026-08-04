@@ -8,21 +8,24 @@ const listPending = async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'server' }) }
 }
 
-// POST /api/personaje/:id/pokemon/:idpp/improvement/moves  { move_ids: [] }
+// POST /api/personaje/:id/pokemon/:idpp/improvement/moves  { move_ids: [], hp_roll }
 const confirmMoves = async (req, res) => {
   try {
-    const r = await svc.confirmMoves(Number(req.params.id), Number(req.params.idpp), req.body.move_ids)
+    const r = await svc.confirmMoves(Number(req.params.id), Number(req.params.idpp), req.body.move_ids, req.body.hp_roll)
     if (r.error === 'notfound') return res.status(404).json({ error: r.error })
+    if (r.error === 'hproll') return res.status(400).json({ error: r.error, max: r.max })
     if (r.error === 'toomany' || r.error === 'invalidmove') return res.status(400).json({ error: r.error })
     res.json(r)
   } catch (e) { console.error(e); res.status(500).json({ error: 'server' }) }
 }
 
-// POST /api/personaje/:id/pokemon/:idpp/improvement/asi  { stats: {}, feat: {} | null }
+// POST /api/personaje/:id/pokemon/:idpp/improvement/asi  { stats: {}, feat: {} | null, hp_roll }
 const confirmAsi = async (req, res) => {
   try {
-    const r = await svc.confirmAsi(Number(req.params.id), Number(req.params.idpp), req.body.stats, req.body.feat)
+    const r = await svc.confirmAsi(Number(req.params.id), Number(req.params.idpp), req.body.stats, req.body.feat, req.body.hp_roll)
     if (r.error === 'notfound' || r.error === 'featnotfound') return res.status(404).json({ error: r.error })
+    if (r.error === 'hproll') return res.status(400).json({ error: r.error, max: r.max })
+    if (r.error === 'duplicate') return res.status(409).json({ error: r.error })
     if (r.error === 'points') return res.status(400).json({ error: r.error, points: r.points })
     res.json(r)
   } catch (e) { console.error(e); res.status(500).json({ error: 'server' }) }
