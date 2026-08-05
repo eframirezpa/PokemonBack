@@ -94,7 +94,7 @@ const updatePokemonEnEquipo = async (req, res, next) => {
   try {
     const result = await svc.setPokemonEnEquipo(req.params.id, req.params.idpp, !!req.body.en_equipo)
     if (result && result.full) {
-      return res.status(409).json({ error: 'El cinturón ya tiene 6 Pokémon' })
+      return res.status(409).json({ error: `El cinturón ya tiene ${result.slots} Pokémon`, slots: result.slots })
     }
     if (!result) return res.status(404).json({ error: 'Pokémon no encontrado' })
     res.json(result)
@@ -272,12 +272,73 @@ const create = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// GET /api/personaje/:id/pokemon/pending-rename → Pokémon recién recibidos
+const pendingRenames = async (req, res, next) => {
+  try {
+    res.json(await svc.pendingRenames(req.params.id))
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/personaje/:id/pokemon/:idpp/moves/:idrow/pp  { cantidad }
+const spendMovePP = async (req, res, next) => {
+  try {
+    const r = await svc.spendMovePP(req.params.id, req.params.idpp, req.params.idrow, req.body.cantidad)
+    if (r.error === 'cantidad')     return res.status(400).json({ error: 'Cantidad inválida' })
+    if (r.error === 'notfound')     return res.status(404).json({ error: 'Movimiento no encontrado' })
+    if (r.error === 'insufficient') return res.status(409).json({ error: 'No tiene suficientes PP', current_pp: r.current_pp })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+// PUT /api/personaje/:id/pokemon/:idpp/moves/:idrow/pp  { current_pp, max_pp }
+const setMovePP = async (req, res, next) => {
+  try {
+    const r = await svc.setMovePP(req.params.id, req.params.idpp, req.params.idrow, req.body.current_pp, req.body.max_pp)
+    if (r.error === 'cantidad') return res.status(400).json({ error: 'Cantidad inválida' })
+    if (r.error === 'notfound') return res.status(404).json({ error: 'Movimiento no encontrado' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/personaje/:id/pokemon/:idpp/apodo  { apodo }
+const renamePokemon = async (req, res, next) => {
+  try {
+    const r = await svc.renamePokemon(req.params.id, req.params.idpp, req.body.apodo)
+    if (r.error === 'apodo')    return res.status(400).json({ error: 'El apodo no puede estar vacío' })
+    if (r.error === 'notfound') return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+// DELETE /api/personaje/:id/pokemon/:idpp → libera (borra) el Pokémon
+const releasePokemon = async (req, res, next) => {
+  try {
+    const r = await svc.releasePokemon(req.params.id, req.params.idpp)
+    if (r.error === 'notfound') return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+// POST /api/personaje/:id/pokemon/:idpp/transfer  { id_personaje_destino }
+const transferPokemon = async (req, res, next) => {
+  try {
+    const destino = Number(req.body.id_personaje_destino)
+    if (!destino) return res.status(400).json({ error: 'id_personaje_destino requerido' })
+    const r = await svc.transferPokemonToPersonaje(req.params.id, req.params.idpp, destino)
+    if (r.error === 'notfound')           return res.status(404).json({ error: 'Pokémon no encontrado' })
+    if (r.error === 'personajenotfound')  return res.status(404).json({ error: 'Personaje destino no encontrado' })
+    if (r.error === 'mismo')              return res.status(400).json({ error: 'El destino es el mismo entrenador' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
 module.exports = {
   getMine, getParty, getById, getFull, updateCombate, updatePokemonCombate,
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
+  renamePokemon, releasePokemon, transferPokemon, pendingRenames, spendMovePP, setMovePP,
   getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,

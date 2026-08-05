@@ -22,10 +22,11 @@ const confirmMoves = async (req, res) => {
 // POST /api/personaje/:id/pokemon/:idpp/improvement/asi  { stats: {}, feat: {} | null, hp_roll }
 const confirmAsi = async (req, res) => {
   try {
-    const r = await svc.confirmAsi(Number(req.params.id), Number(req.params.idpp), req.body.stats, req.body.feat, req.body.hp_roll)
+    const r = await svc.confirmAsi(Number(req.params.id), Number(req.params.idpp), req.body.stats, req.body.feat, req.body.hp_roll, req.body.move_ids)
     if (r.error === 'notfound' || r.error === 'featnotfound') return res.status(404).json({ error: r.error })
     if (r.error === 'hproll') return res.status(400).json({ error: r.error, max: r.max })
     if (r.error === 'duplicate') return res.status(409).json({ error: r.error })
+    if (r.error === 'toomany' || r.error === 'invalidmove') return res.status(400).json({ error: r.error })
     if (r.error === 'points') return res.status(400).json({ error: r.error, points: r.points })
     res.json(r)
   } catch (e) { console.error(e); res.status(500).json({ error: 'server' }) }

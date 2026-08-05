@@ -74,6 +74,24 @@ const listPending = async (id_personaje) => {
       hit_dice: p.pokemon_hit_dice || null,
       hit_dice_max: hitDiceMax(p.pokemon_hit_dice),
     }
+    // Los movimientos se pueden reacomodar en cualquier subida de nivel,
+    // así que se calculan siempre (antes solo en los niveles sin ASI).
+    const { rows: learned } = await query(
+      `SELECT m.move_id, m.move_name, m.move_type
+       FROM ${TPPM} pm JOIN ${TMOVES} m ON m.move_id = pm.personaje_pokemon_moves_move_id
+       WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1
+       ORDER BY pm.personaje_pokemon_moves_id`, [p.idpp])
+    item.learned_moves = learned.filter(m => m.move_id !== STRUGGLE_ID)
+    const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [p.id_pokemon])
+    const poolNames = pkRows[0] ? movePoolNames(pkRows[0], level) : []
+    let pool = []
+    if (poolNames.length) {
+      const { rows: mrows } = await query(
+        `SELECT move_id, move_name, move_type FROM ${TMOVES} WHERE lower(move_name) = ANY($1)`, [poolNames])
+      pool = mrows.filter(m => m.move_id !== STRUGGLE_ID)
+    }
+    item.move_pool = pool
+
     if (isAsi) {
       const { rows: st } = await query(`SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [p.idpp])
       item.stats = st[0] || null
@@ -89,22 +107,6 @@ const listPending = async (id_personaje) => {
       const line = await evolutionLine(p.id_pokemon)
       item.evolution_line = line
       item.points = pointsForLine(line)
-    } else {
-      const { rows: learned } = await query(
-        `SELECT m.move_id, m.move_name, m.move_type
-         FROM ${TPPM} pm JOIN ${TMOVES} m ON m.move_id = pm.personaje_pokemon_moves_move_id
-         WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1
-         ORDER BY pm.personaje_pokemon_moves_id`, [p.idpp])
-      item.learned_moves = learned.filter(m => m.move_id !== STRUGGLE_ID)
-      const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [p.id_pokemon])
-      const poolNames = pkRows[0] ? movePoolNames(pkRows[0], level) : []
-      let pool = []
-      if (poolNames.length) {
-        const { rows: mrows } = await query(
-          `SELECT move_id, move_name, move_type FROM ${TMOVES} WHERE lower(move_name) = ANY($1)`, [poolNames])
-        pool = mrows.filter(m => m.move_id !== STRUGGLE_ID)
-      }
-      item.move_pool = pool
     }
     out.push(item)
   }
@@ -148,15 +150,10 @@ const applyHpRoll = (client, id_personaje_pokemon, roll) =>
      WHERE id_personaje_pokemon = $2`,
     [roll, id_personaje_pokemon])
 
-// Confirma el flujo de movimientos: reemplaza el moveset (Struggle siempre + hasta 4).
-const confirmMoves = async (id_personaje, id_personaje_pokemon, moveIdsRaw, hpRollRaw) => {
-  const pend = await findPending(id_personaje, id_personaje_pokemon, false)
-  if (!pend) return { error: 'notfound' }
-  const hp = checkHpRoll(pend, hpRollRaw)
-  if (hp.error) return hp
+// Valida los movimientos elegidos contra el pool del nivel. Devuelve { ids } o { error }.
+const checkMoves = async (pend, moveIdsRaw) => {
   const ids = [...new Set((moveIdsRaw || []).map(Number).filter(Boolean))].filter(id => id !== STRUGGLE_ID)
   if (ids.length > 4) return { error: 'toomany' }
-  // Validar que estén dentro del pool disponible
   const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [pend.id_pokemon])
   const poolNames = pkRows[0] ? movePoolNames(pkRows[0], Number(pend.pokemon_level) || 1) : []
   let poolIds = new Set()
@@ -165,13 +162,32 @@ const confirmMoves = async (id_personaje, id_personaje_pokemon, moveIdsRaw, hpRo
     poolIds = new Set(mrows.map(m => m.move_id))
   }
   if (ids.some(id => !poolIds.has(id))) return { error: 'invalidmove' }
+  return { ids }
+}
+
+// Reemplaza el moveset: Struggle siempre presente, más los elegidos.
+const applyMoves = async (client, id_personaje_pokemon, ids) => {
+  await client.query(`DELETE FROM ${TPPM} WHERE personaje_pokemon_moves_personaje_pokemon_id = $1`, [id_personaje_pokemon])
+  for (const mid of [STRUGGLE_ID, ...ids]) {
+    // Los PP arrancan llenos con el valor del catálogo; sin esto quedaban en 0 (ilimitado)
+    await client.query(
+      `INSERT INTO ${TPPM} (personaje_pokemon_moves_move_id, personaje_pokemon_moves_personaje_pokemon_id,
+                            personaje_pokemon_moves_current_pp, personaje_pokemon_moves_max_pp)
+       SELECT $1, $2, COALESCE(m.move_pp, 0), COALESCE(m.move_pp, 0)
+         FROM ${TMOVES} m WHERE m.move_id = $1`, [mid, id_personaje_pokemon])
+  }
+}
+
+// Confirma el flujo de movimientos: reemplaza el moveset (Struggle siempre + hasta 4).
+const confirmMoves = async (id_personaje, id_personaje_pokemon, moveIdsRaw, hpRollRaw) => {
+  const pend = await findPending(id_personaje, id_personaje_pokemon, false)
+  if (!pend) return { error: 'notfound' }
+  const hp = checkHpRoll(pend, hpRollRaw)
+  if (hp.error) return hp
+  const mv = await checkMoves(pend, moveIdsRaw)
+  if (mv.error) return mv
   return transaction(async (client) => {
-    await client.query(`DELETE FROM ${TPPM} WHERE personaje_pokemon_moves_personaje_pokemon_id = $1`, [id_personaje_pokemon])
-    for (const mid of [STRUGGLE_ID, ...ids]) {
-      await client.query(
-        `INSERT INTO ${TPPM} (personaje_pokemon_moves_move_id, personaje_pokemon_moves_personaje_pokemon_id)
-         VALUES ($1, $2)`, [mid, id_personaje_pokemon])
-    }
+    await applyMoves(client, id_personaje_pokemon, mv.ids)
     await applyHpRoll(client, id_personaje_pokemon, hp.roll)
     await client.query(
       `UPDATE ${TPPI} SET personaje_pokemon_pending_improvement_applied = true
@@ -182,11 +198,14 @@ const confirmMoves = async (id_personaje, id_personaje_pokemon, moveIdsRaw, hpRo
 
 // Confirma el flujo ASI: aplica los puntos a stats base (tope 20/22) y persiste un feat.
 // statAdds = { dex, str, ... } enteros ≥ 0; feat = { feat_id, bonos:[{type,llave,value}] } | null
-const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hpRollRaw) => {
+const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hpRollRaw, moveIdsRaw) => {
   const pend = await findPending(id_personaje, id_personaje_pokemon, true)
   if (!pend) return { error: 'notfound' }
   const hp = checkHpRoll(pend, hpRollRaw)
   if (hp.error) return hp
+  // Los movimientos también se reacomodan en los niveles con ASI
+  const mv = await checkMoves(pend, moveIdsRaw)
+  if (mv.error) return mv
   const level = Number(pend.pokemon_level) || 1
   const line = await evolutionLine(pend.id_pokemon)
   const points = pointsForLine(line)
@@ -239,6 +258,7 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hp
           [pfId, b.type ?? null, b.llave ?? null, b.value ?? null])
       }
     }
+    await applyMoves(client, id_personaje_pokemon, mv.ids)
     await applyHpRoll(client, id_personaje_pokemon, hp.roll)
     await client.query(
       `UPDATE ${TPPI} SET personaje_pokemon_pending_improvement_applied = true

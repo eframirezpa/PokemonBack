@@ -600,15 +600,24 @@ const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) =
       `SELECT nombre_personaje FROM ${TPERS} WHERE id_personaje = $1`, [id_personaje])
     if (!per.length) return { error: 'personajenotfound' }
 
-    // ── 1. El Pokémon. Llega a la femputadora (no al cinturón, que tiene tope de 6)
-    //       y sin invocar, para no chocar con el Pokémon que el trainer tenga en juego.
+    // ── 1. El Pokémon. Va al cinturón si quedan ranuras libres (personaje_pokeslots);
+    //       si está lleno cae en la femputadora. Nunca llega invocado, para no chocar
+    //       con el que el trainer tenga en juego.
+    const { rows: slotRows } = await client.query(
+      `SELECT personaje_pokeslots FROM ${TPERS} WHERE id_personaje = $1`, [id_personaje])
+    const slots = Number(slotRows[0]?.personaje_pokeslots)
+    const maxSlots = Number.isFinite(slots) && slots >= 0 ? slots : 3
+    const { rows: cntRows } = await client.query(
+      `SELECT COUNT(*)::int AS c FROM ${TPP} WHERE id_personaje = $1 AND pokemon_en_equipo = true`, [id_personaje])
+    const alCinturon = cntRows[0].c < maxSlots
+
     const cols = TRANSFER_COLS.join(', ')
     const refs = TRANSFER_COLS.map(c => `o.${c}`).join(', ')
     const { rows: ins } = await client.query(
-      `INSERT INTO ${TPP} (id_personaje, pokemon_en_equipo, personaje_pokemon_is_in_game, ${cols})
-       SELECT $2, false, false, ${refs} FROM ${TMP} o WHERE o.id_master_pokemon = $1
+      `INSERT INTO ${TPP} (id_personaje, pokemon_en_equipo, personaje_pokemon_is_in_game, pokemon_needs_rename, ${cols})
+       SELECT $2, $3, false, true, ${refs} FROM ${TMP} o WHERE o.id_master_pokemon = $1
        RETURNING id_personaje_pokemon`,
-      [id_master_pokemon, id_personaje])
+      [id_master_pokemon, id_personaje, alCinturon])
     const nuevoId = ins[0].id_personaje_pokemon
 
     // ── 2. Stats
@@ -677,6 +686,7 @@ const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) =
       pokemon_name: origen.pokemon_name,
       pokemon_apodo: origen.pokemon_apodo,
       nombre_personaje: per[0].nombre_personaje,
+      en_equipo: alCinturon, // false = el cinturón estaba lleno y fue a la femputadora
     }
   })
 }

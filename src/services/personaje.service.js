@@ -450,7 +450,8 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
     [id_personaje_pokemon]
   )
   const { rows: moves } = await query(
-    `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range,
+    `SELECT pm.personaje_pokemon_moves_id, pm.personaje_pokemon_moves_current_pp, pm.personaje_pokemon_moves_max_pp,
+            m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range,
             m.move_duration, m.move_description, m.move_power_1, m.move_power_2, m.move_power_3,
             m.move_higher_levels, m.move_optional_rules, m.move_has_damage,
             m.move_damage_level_1, m.move_damage_level_5, m.move_damage_level_10, m.move_damage_level_17,
@@ -571,13 +572,26 @@ const addPokemonExperience = async (id_personaje_pokemon, amountRaw) => {
 }
 
 // Marca/desmarca un Pokémon como "en el cinturón". Máximo 6 en el cinturón.
+// Ranuras del cinturón: las define personaje_pokeslots, que puede cambiar.
+const pokeSlots = async (id_personaje, client = null) => {
+  const run = client ? client.query.bind(client) : query
+  const { rows } = await run(`SELECT personaje_pokeslots FROM ${T} WHERE id_personaje = $1`, [id_personaje])
+  const n = Number(rows[0]?.personaje_pokeslots)
+  return Number.isFinite(n) && n >= 0 ? n : 3
+}
+
+// Cuántos Pokémon hay ahora mismo en el cinturón
+const enEquipoCount = async (id_personaje, client = null) => {
+  const run = client ? client.query.bind(client) : query
+  const { rows } = await run(
+    `SELECT COUNT(*)::int AS c FROM ${TPP} WHERE id_personaje = $1 AND pokemon_en_equipo = true`, [id_personaje])
+  return rows[0].c
+}
+
 const setPokemonEnEquipo = async (id_personaje, id_personaje_pokemon, enEquipo) => {
   if (enEquipo) {
-    const { rows } = await query(
-      `SELECT COUNT(*)::int AS c FROM ${TPP} WHERE id_personaje = $1 AND pokemon_en_equipo = true`,
-      [id_personaje]
-    )
-    if (rows[0].c >= 6) return { full: true }
+    const [usados, slots] = await Promise.all([enEquipoCount(id_personaje), pokeSlots(id_personaje)])
+    if (usados >= slots) return { full: true, slots }
   }
   // Al sacar del cinturón, también deja de estar invocado (no puede seguir "en juego" fuera del equipo)
   const extra = enEquipo ? '' : ', personaje_pokemon_is_in_game = false'
@@ -588,6 +602,129 @@ const setPokemonEnEquipo = async (id_personaje, id_personaje_pokemon, enEquipo) 
     [enEquipo, id_personaje_pokemon, id_personaje]
   )
   return rows[0] || null
+}
+
+// Pokémon recién recibidos que aún esperan que su dueño los renombre.
+const pendingRenames = async (id_personaje) => {
+  const { rows } = await query(
+    `SELECT pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_level,
+            pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pp.pokemon_is_shiny
+       FROM ${TPP} pp JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
+      WHERE pp.id_personaje = $1 AND pp.pokemon_needs_rename = true
+      ORDER BY pp.id_personaje_pokemon`, [id_personaje])
+  return rows.map(fixMedia)
+}
+
+// Gasta PP de un movimiento aprendido. No baja de 0 ni permite cantidades <= 0.
+// Los movimientos de PP ilimitado (max 0, p. ej. Struggle) no gastan nada.
+const spendMovePP = async (id_personaje, id_personaje_pokemon, id_move_row, cantidadRaw) => {
+  const n = Math.floor(Number(cantidadRaw))
+  if (!Number.isFinite(n) || n < 1) return { error: 'cantidad' }
+  const { rows } = await query(
+    `SELECT pm.personaje_pokemon_moves_current_pp AS actual, pm.personaje_pokemon_moves_max_pp AS max
+       FROM ${TPPM} pm JOIN ${TPP} pp ON pp.id_personaje_pokemon = pm.personaje_pokemon_moves_personaje_pokemon_id
+      WHERE pm.personaje_pokemon_moves_id = $1
+        AND pm.personaje_pokemon_moves_personaje_pokemon_id = $2
+        AND pp.id_personaje = $3`,
+    [id_move_row, id_personaje_pokemon, id_personaje])
+  if (!rows.length) return { error: 'notfound' }
+  const { actual, max } = rows[0]
+  if (Number(max) === 0) return { ok: true, current_pp: 0, max_pp: 0, unlimited: true }
+  if (n > Number(actual)) return { error: 'insufficient', current_pp: Number(actual) }
+  const { rows: upd } = await query(
+    `UPDATE ${TPPM} SET personaje_pokemon_moves_current_pp = personaje_pokemon_moves_current_pp - $1
+      WHERE personaje_pokemon_moves_id = $2
+      RETURNING personaje_pokemon_moves_current_pp AS current_pp, personaje_pokemon_moves_max_pp AS max_pp`,
+    [n, id_move_row])
+  return { ok: true, ...upd[0] }
+}
+
+// Fija los PP de un movimiento (gestión manual). El actual nunca supera al máximo.
+const setMovePP = async (id_personaje, id_personaje_pokemon, id_move_row, currentRaw, maxRaw) => {
+  const max = Math.floor(Number(maxRaw))
+  const cur = Math.floor(Number(currentRaw))
+  if (!Number.isFinite(max) || !Number.isFinite(cur) || max < 0 || cur < 0) return { error: 'cantidad' }
+  const { rows } = await query(
+    `SELECT 1 FROM ${TPPM} pm JOIN ${TPP} pp ON pp.id_personaje_pokemon = pm.personaje_pokemon_moves_personaje_pokemon_id
+      WHERE pm.personaje_pokemon_moves_id = $1
+        AND pm.personaje_pokemon_moves_personaje_pokemon_id = $2
+        AND pp.id_personaje = $3`,
+    [id_move_row, id_personaje_pokemon, id_personaje])
+  if (!rows.length) return { error: 'notfound' }
+  const { rows: upd } = await query(
+    `UPDATE ${TPPM} SET personaje_pokemon_moves_max_pp = $1::int,
+                        personaje_pokemon_moves_current_pp = LEAST($2::int, $1::int)
+      WHERE personaje_pokemon_moves_id = $3
+      RETURNING personaje_pokemon_moves_current_pp AS current_pp, personaje_pokemon_moves_max_pp AS max_pp`,
+    [max, cur, id_move_row])
+  return { ok: true, ...upd[0] }
+}
+
+// Renombra el Pokémon (apodo). Se usa al recibir uno nuevo.
+const renamePokemon = async (id_personaje, id_personaje_pokemon, apodo) => {
+  const nombre = String(apodo ?? '').trim()
+  if (!nombre) return { error: 'apodo' }
+  const { rows } = await query(
+    `UPDATE ${TPP} SET pokemon_apodo = $1, pokemon_needs_rename = false
+     WHERE id_personaje_pokemon = $2 AND id_personaje = $3
+     RETURNING id_personaje_pokemon, pokemon_apodo`,
+    [nombre.slice(0, 60), id_personaje_pokemon, id_personaje])
+  return rows[0] || { error: 'notfound' }
+}
+
+// Libera un Pokémon: lo borra junto con todo lo que cuelga de él. Es irreversible.
+// personaje_pokemon_pasiva y pokemon_skills/stats no tienen ON DELETE CASCADE,
+// así que se limpian a mano antes del registro padre.
+const releasePokemon = async (id_personaje, id_personaje_pokemon) => {
+  return transaction(async (client) => {
+    const { rows } = await client.query(
+      `SELECT pokemon_apodo FROM ${TPP} WHERE id_personaje_pokemon = $1 AND id_personaje = $2`,
+      [id_personaje_pokemon, id_personaje])
+    if (!rows.length) return { error: 'notfound' }
+    const apodo = rows[0].pokemon_apodo
+
+    await client.query(
+      `DELETE FROM ${TPPFB} WHERE personaje_pokemon_feat_bonus_personaje_pokemon_feat_id IN
+         (SELECT personaje_pokemon_feat_id FROM ${TPPF} WHERE id_trainer_pokemon = $1)`, [id_personaje_pokemon])
+    await client.query(`DELETE FROM ${TPPF}  WHERE id_trainer_pokemon = $1`, [id_personaje_pokemon])
+    await client.query(`DELETE FROM ${TPPP}  WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
+    await client.query(`DELETE FROM ${TPPM}  WHERE personaje_pokemon_moves_personaje_pokemon_id = $1`, [id_personaje_pokemon])
+    await client.query(`DELETE FROM ${TPSK}  WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
+    await client.query(`DELETE FROM ${TPS}   WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
+    await client.query(`DELETE FROM ${TPPI}  WHERE personaje_pokemon_pending_improvement_pokemon_id = $1`, [id_personaje_pokemon])
+    await client.query(`DELETE FROM ${TPP}   WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
+    return { ok: true, pokemon_apodo: apodo }
+  })
+}
+
+// Traspasa un Pokémon de un entrenador a otro. No se copian filas: basta con
+// cambiar el dueño, porque todas las tablas dependientes cuelgan del mismo
+// id_personaje_pokemon. Llega a la femputadora del destino y sin invocar.
+const transferPokemonToPersonaje = async (id_personaje, id_personaje_pokemon, id_destino) => {
+  return transaction(async (client) => {
+    const { rows } = await client.query(
+      `SELECT pokemon_apodo FROM ${TPP} WHERE id_personaje_pokemon = $1 AND id_personaje = $2`,
+      [id_personaje_pokemon, id_personaje])
+    if (!rows.length) return { error: 'notfound' }
+    if (Number(id_destino) === Number(id_personaje)) return { error: 'mismo' }
+
+    const { rows: dest } = await client.query(
+      `SELECT nombre_personaje FROM ${T} WHERE id_personaje = $1`, [id_destino])
+    if (!dest.length) return { error: 'personajenotfound' }
+
+    await client.query(
+      `UPDATE ${TPP}
+          SET id_personaje = $1, pokemon_en_equipo = false,
+              personaje_pokemon_is_in_game = false, pokemon_needs_rename = true
+        WHERE id_personaje_pokemon = $2`,
+      [id_destino, id_personaje_pokemon])
+    return {
+      ok: true,
+      id_personaje_pokemon: Number(id_personaje_pokemon),
+      pokemon_apodo: rows[0].pokemon_apodo,
+      nombre_personaje: dest[0].nombre_personaje,
+    }
+  })
 }
 
 // ── Armas del personaje ──────────────────────────────────────────
@@ -1137,8 +1274,8 @@ const create = async (id_partida, user_id, data) => {
          saving_throw_prof, pokedollars_personaje, personaje_prof, personaje_ac,
          personaje_pokelvls, personaje_ideales, personaje_falencias, personaje_conexiones,
          personaje_speed, personaje_hit_dice_left,
-         personaje_exahust_lvl, personaje_dsts, personaje_dstf
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+         personaje_exahust_lvl, personaje_dsts, personaje_dstf, personaje_pokeslots
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        RETURNING *`,
       [
         data.nombre_personaje ?? null,
@@ -1153,13 +1290,14 @@ const create = async (id_partida, user_id, data) => {
         Number(data.pokedollars) || 0,
         2, // personaje_prof: bono de proficiencia inicial (nivel 1)
         data.personaje_ac != null ? Number(data.personaje_ac) : null,
-        '1/1', // personaje_pokelvls inicial
+        '1', // personaje_pokelvls inicial
         data.ideales ?? null,
         data.falencias ?? null,
         data.conexiones ?? null,
         30, // personaje_speed inicial (ft)
         '1/1', // personaje_hit_dice_left inicial
         0, 0, 0, // personaje_exahust_lvl, personaje_dsts, personaje_dstf
+        3, // personaje_pokeslots: ranuras de Pokémon iniciales
       ]
     )
     const personaje = pRows[0]
@@ -1360,8 +1498,10 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
     const uniqMoves = [...new Set((move_ids || []).map(Number).filter(Boolean))]
     for (const mid of uniqMoves) {
       await client.query(
-        `INSERT INTO ${TPPM} (personaje_pokemon_moves_move_id, personaje_pokemon_moves_personaje_pokemon_id)
-         VALUES ($1,$2)`,
+        `INSERT INTO ${TPPM} (personaje_pokemon_moves_move_id, personaje_pokemon_moves_personaje_pokemon_id,
+                              personaje_pokemon_moves_current_pp, personaje_pokemon_moves_max_pp)
+         SELECT $1, $2, COALESCE(m.move_pp, 0), COALESCE(m.move_pp, 0)
+           FROM ${TMOVES} m WHERE m.move_id = $1`,
         [mid, id_pp]
       )
     }
@@ -1385,6 +1525,7 @@ module.exports = {
   findArmor, addArmor, setArmorInUse,
   findWeapon, addWeapon, setWeaponInUse,
   findPokemon, findPokemonDetail, setPokemonEnEquipo, setPokemonEnJuego, addPokemon, addPokemonExperience,
+  pokeSlots, enEquipoCount, renamePokemon, releasePokemon, transferPokemonToPersonaje, pendingRenames, spendMovePP, setMovePP,
   findFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,
