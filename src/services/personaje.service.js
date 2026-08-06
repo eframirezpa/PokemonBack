@@ -593,7 +593,10 @@ const enEquipoCount = async (id_personaje, client = null) => {
 
 const setPokemonEnEquipo = async (id_personaje, id_personaje_pokemon, enEquipo) => {
   if (enEquipo) {
-    const [usados, slots] = await Promise.all([enEquipoCount(id_personaje), pokeSlots(id_personaje)])
+    // Secuencial y no en paralelo: en serverless el pool es de muy pocas
+    // conexiones, y dos queries a la vez se quedarían esperando una libre.
+    const usados = await enEquipoCount(id_personaje)
+    const slots  = await pokeSlots(id_personaje)
     if (usados >= slots) return { full: true, slots }
   }
   // Al sacar del cinturón, también deja de estar invocado (no puede seguir "en juego" fuera del equipo)
@@ -1008,7 +1011,11 @@ const findFeats = async (id_personaje) => {
 // la creación, cuando lo otorgan el origen o el background.
 //   skills → una fila por skill (prof)
 //   textos → una sola fila (llave 'Tool Prof') unida por el separador
-const skilledBonusRows = async (choice) => {
+// `run` permite ejecutar con el client de una transacción en curso. Es
+// obligatorio cuando se llama desde dentro de transaction(): pedirle otra
+// conexión al pool mientras la transacción retiene la suya se bloquea en cuanto
+// el pool es pequeño, que es justo la configuración que necesita serverless.
+const skilledBonusRows = async (choice, run = query) => {
   const sk     = choice || {}
   const skills = [...new Set((Array.isArray(sk.skills) ? sk.skills : []).map(s => (s || '').trim()).filter(Boolean))]
   const texts  = (Array.isArray(sk.texts) ? sk.texts : []).map(t => (t || '').toString().trim()).filter(Boolean)
@@ -1016,7 +1023,7 @@ const skilledBonusRows = async (choice) => {
 
   const rows = []
   if (skills.length) {
-    const { rows: valid } = await query(
+    const { rows: valid } = await run(
       `SELECT skill_name FROM ${TSKILLS} WHERE lower(skill_name) = ANY($1)`, [skills.map(s => s.toLowerCase())])
     const validSet = new Set(valid.map(r => r.skill_name.toLowerCase()))
     if (skills.some(s => !validSet.has(s.toLowerCase()))) return { error: 'choices' }
@@ -1463,7 +1470,8 @@ const create = async (id_partida, user_id, data) => {
     const daSkilled = [skRows[0]?.origin_feat_id, skRows[0]?.background_feat_id]
       .some(id => Number(id) === FEAT_SKILLED)
     if (daSkilled) {
-      const filas = await skilledBonusRows(data.skilled_choices)
+      // Con el client de la transacción: pedir otra conexión aquí se bloquearía
+      const filas = await skilledBonusRows(data.skilled_choices, (t, p) => client.query(t, p))
       // Sin elecciones válidas se aborta la creación en vez de crear el personaje
       // sin el feat: quedaría debiendo 3 proficiencias sin rastro de que las
       // debe. Skilled es repetible, así que agregarlo luego con el lápiz no
