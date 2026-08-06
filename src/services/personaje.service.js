@@ -41,6 +41,9 @@ const MAX_ITEM_QTY = 999                // máximo por item (tope del stack)
 const MAX_POKEDOLLARS_ADD = 50000000    // máximo a agregar de una vez
 const MAX_POKEDOLLARS_TOTAL = 999999999 // máximo que se puede llegar a tener
 
+// Proficiencia (y por tanto STAB) de un Pokémon recién capturado, nivel 1
+const PROF_INICIAL = 2
+
 // Stats válidos para los bonos de tipo 'stat'
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
 // Feat con manejo especial: Skilled (3 entre proficiencias de skill y textos de Tool Prof)
@@ -1446,10 +1449,10 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
        RETURNING *`,
       [
         id_personaje, id_pokemon, apodo ?? pk.pokemon_name, hp, hp,
-        true, 2, 3, 1,
+        true, PROF_INICIAL, 3, 1,
         hitDice, pk.pokemon_saving_throws ?? null, '1/1',
         pk.pokemon_armor_class != null ? Number(pk.pokemon_armor_class) : null,
-        id_nat, 2, bond,
+        id_nat, PROF_INICIAL, bond, // el STAB siempre vale lo mismo que la proficiencia
         pk.pokemon_speed_1_name ?? null, pk.pokemon_speed_1_value ?? null,
         pk.pokemon_speed_2_name ?? null, pk.pokemon_speed_2_value ?? null,
         pk.pokemon_speed_3_name ?? null, pk.pokemon_speed_3_value ?? null,

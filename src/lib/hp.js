@@ -100,13 +100,28 @@ function pokemonCon(stats, feats) {
   return (Number(stats?.pokemon_con) || 0) + (Number(stats?.pokemon_con_bonus) || 0) + featAdd
 }
 
-// Suma en vivo al HP máximo: modificador de CON por cada nivel.
+// Healing que aportan los feats del Pokémon. El valor puede venir como
+// "2 per lvl" (se multiplica por el nivel) o como un número suelto.
+function pokemonHealing(feats, level) {
+  const lvl = Math.max(1, Number(level) || 1)
+  let total = 0
+  for (const f of (feats || [])) {
+    for (const b of (f.bonos || [])) {
+      if (norm(b.type) !== 'healing') continue
+      const m = /(\d+)\s*per\s*l/i.exec(String(b.value ?? ''))
+      total += m ? Number(m[1]) * lvl : (Number(b.value) || 0)
+    }
+  }
+  return total
+}
+
+// Suma en vivo al HP máximo: modificador de CON por nivel más el healing de feats.
 // Un CON bajo (modificador negativo) no resta vida: el piso es 0, así que el
 // máximo nunca queda por debajo del pokemon_hp guardado.
 function pokemonHpExtra({ stats, feats, level }) {
   const lvl = Math.max(1, Number(level) || 1)
   const mod = Math.max(0, Math.floor((pokemonCon(stats, feats) - 10) / 2))
-  return mod * lvl
+  return mod * lvl + pokemonHealing(feats, lvl)
 }
 
 // Máximo efectivo de un Pokémon = pokemon_hp guardado + modCON × nivel

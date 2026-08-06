@@ -77,7 +77,12 @@ const listPending = async (id_personaje) => {
     // Los movimientos se pueden reacomodar en cualquier subida de nivel,
     // así que se calculan siempre (antes solo en los niveles sin ASI).
     const { rows: learned } = await query(
-      `SELECT m.move_id, m.move_name, m.move_type
+      `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range,
+              m.move_duration, m.move_description, m.move_power_1, m.move_power_2, m.move_power_3,
+              m.move_higher_levels, m.move_optional_rules, m.move_has_damage,
+              m.move_damage_level_1, m.move_damage_level_5, m.move_damage_level_10, m.move_damage_level_17,
+              m.move_damage_modifier, m.move_damage_type, m.move_attack_scope,
+              m.move_save_attribute, m.move_save_dc, m.move_is_concentration
        FROM ${TPPM} pm JOIN ${TMOVES} m ON m.move_id = pm.personaje_pokemon_moves_move_id
        WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1
        ORDER BY pm.personaje_pokemon_moves_id`, [p.idpp])
@@ -87,7 +92,12 @@ const listPending = async (id_personaje) => {
     let pool = []
     if (poolNames.length) {
       const { rows: mrows } = await query(
-        `SELECT move_id, move_name, move_type FROM ${TMOVES} WHERE lower(move_name) = ANY($1)`, [poolNames])
+        `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range,
+              m.move_duration, m.move_description, m.move_power_1, m.move_power_2, m.move_power_3,
+              m.move_higher_levels, m.move_optional_rules, m.move_has_damage,
+              m.move_damage_level_1, m.move_damage_level_5, m.move_damage_level_10, m.move_damage_level_17,
+              m.move_damage_modifier, m.move_damage_type, m.move_attack_scope,
+              m.move_save_attribute, m.move_save_dc, m.move_is_concentration FROM ${TMOVES} m WHERE lower(m.move_name) = ANY($1)`, [poolNames])
       pool = mrows.filter(m => m.move_id !== STRUGGLE_ID)
     }
     item.move_pool = pool
@@ -100,10 +110,23 @@ const listPending = async (id_personaje) => {
          FROM ${TPSK} ps JOIN ${TSKILLS} s ON s.skill_id = ps.id_skill
          WHERE ps.id_personaje_pokemon = $1 ORDER BY ps.id_pokemon_skills`, [p.idpp])
       item.skills = skills
-      // Feats que el Pokémon ya tiene: los no repetibles no deben volver a ofrecerse
+      // Feats que el Pokémon ya tiene, con sus bonos: los no repetibles no deben
+      // volver a ofrecerse y sus bonos de stat tienen que verse reflejados.
       const { rows: owned } = await query(
-        `SELECT feat_id FROM ${TPPF} WHERE id_trainer_pokemon = $1`, [p.idpp])
+        `SELECT pf.feat_id,
+                COALESCE((
+                  SELECT json_agg(json_build_object(
+                    'type',  b.personaje_pokemon_feat_bonus_type,
+                    'llave', b.personaje_pokemon_feat_bonus_llave,
+                    'value', b.personaje_pokemon_feat_bonus_value
+                  ) ORDER BY b.personaje_pokemon_feat_bonus_id)
+                  FROM ${TPPFB} b
+                  WHERE b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id = pf.personaje_pokemon_feat_id
+                ), '[]') AS bonos
+           FROM ${TPPF} pf WHERE pf.id_trainer_pokemon = $1
+          ORDER BY pf.personaje_pokemon_feat_id`, [p.idpp])
       item.owned_feat_ids = owned.map(f => f.feat_id)
+      item.feats = owned
       const line = await evolutionLine(p.id_pokemon)
       item.evolution_line = line
       item.points = pointsForLine(line)

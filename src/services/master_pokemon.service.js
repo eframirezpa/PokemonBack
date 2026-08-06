@@ -350,7 +350,7 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
         true, proficiency, 3, level,
         hitDice, pk.pokemon_saving_throws ?? null, '1/1',
         pk.pokemon_armor_class != null ? Number(pk.pokemon_armor_class) : null,
-        id_nat, 2, bond,
+        id_nat, proficiency, bond, // el STAB siempre vale lo mismo que la proficiencia
         pk.pokemon_speed_1_name ?? null, pk.pokemon_speed_1_value ?? null,
         pk.pokemon_speed_2_name ?? null, pk.pokemon_speed_2_value ?? null,
         pk.pokemon_speed_3_name ?? null, pk.pokemon_speed_3_value ?? null,
