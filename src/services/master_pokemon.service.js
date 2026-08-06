@@ -1,4 +1,5 @@
 const { query, transaction, SCHEMA } = require('../config/db')
+const { recalcularSeguro } = require('./trainer_level.service')
 
 // Tablas del master (copia de las de personaje_pokemon, atadas al usuario master)
 const TMP  = `"${SCHEMA}"."master_pokemon"`
@@ -680,6 +681,9 @@ const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) =
     await client.query(`DELETE FROM ${TMPP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
     await client.query(`DELETE FROM ${TMP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
 
+    // El Pokémon que acaba de recibir cuenta para sus pokelvls
+    const nivel = await recalcularSeguro(id_personaje, (t, p) => client.query(t, p))
+
     return {
       ok: true,
       id_personaje_pokemon: nuevoId,
@@ -687,6 +691,7 @@ const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) =
       pokemon_apodo: origen.pokemon_apodo,
       nombre_personaje: per[0].nombre_personaje,
       en_equipo: alCinturon, // false = el cinturón estaba lleno y fue a la femputadora
+      nivel_entrenador: nivel,
     }
   })
 }

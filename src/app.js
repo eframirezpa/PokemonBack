@@ -32,6 +32,9 @@ const featsBonusRoutes       = require('./routes/feats_bonus.routes')
 const skillsRoutes           = require('./routes/skills.routes')
 const personajeDetailsRoutes = require('./routes/personaje_details.routes')
 const notasRoutes            = require('./routes/notas.routes')
+const trainerLevelsRoutes    = require('./routes/trainer_levels.routes')
+const trainerLevelReqRoutes  = require('./routes/trainer_pokemon_level_requirements.routes')
+const pathsRoutes            = require('./routes/paths.routes')
 
 const app = express()
 
@@ -89,6 +92,9 @@ app.use('/api/feats-bonus',       featsBonusRoutes)
 app.use('/api/skills',            skillsRoutes)
 app.use('/api/personaje-details', personajeDetailsRoutes)
 app.use('/api/notas',             notasRoutes)
+app.use('/api/trainer-levels',    trainerLevelsRoutes)
+app.use('/api/trainer-level-requirements', trainerLevelReqRoutes)
+app.use('/api/paths',             pathsRoutes)
 
 // 404
 app.use((_req, res) => {

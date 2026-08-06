@@ -1,5 +1,6 @@
 const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
+const { recalcularSeguro } = require('./trainer_level.service')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -536,8 +537,24 @@ const addPokemonExperience = async (id_personaje_pokemon, amountRaw) => {
   const newLevel = (nextT != null && newExp >= nextT) ? Math.min(level + 1, 20) : level
 
   return transaction(async (client) => {
+    // La proficiencia depende del nivel (pokemon_levels): +2 en 1-4, +3 en 5-8,
+    // +4 en 9-12, +5 en 13-16, +6 en 17-20. Hay que moverla junto con el nivel,
+    // o un Pokémon que crece desde el 1 se queda con +2 para siempre.
+    // El STAB vale siempre lo mismo que la proficiencia, así que va con ella.
+    // Subconsulta y no UPDATE..FROM a propósito: con un JOIN, un nivel ausente
+    // en pokemon_levels dejaría la fila sin tocar y se perdería la experiencia.
+    // Así, si la tabla no responde, el COALESCE conserva el valor anterior.
     await client.query(
-      `UPDATE ${TPP} SET pokemon_experiencia = $1, pokemon_level = $2 WHERE id_personaje_pokemon = $3`,
+      `UPDATE ${TPP}
+          SET pokemon_experiencia = $1,
+              pokemon_level       = $2,
+              pokemon_proficient     = COALESCE(
+                (SELECT pokemon_level_proficiency_bonus FROM ${TLEVELS} WHERE pokemon_level = $2),
+                pokemon_proficient),
+              personaje_pokemon_stab = COALESCE(
+                (SELECT pokemon_level_proficiency_bonus FROM ${TLEVELS} WHERE pokemon_level = $2),
+                personaje_pokemon_stab)
+        WHERE id_personaje_pokemon = $3`,
       [newExp, newLevel, id_personaje_pokemon])
 
     let leveled_up = false
@@ -570,7 +587,16 @@ const addPokemonExperience = async (id_personaje_pokemon, amountRaw) => {
           [id_personaje_pokemon, newLevel, type])
       }
     }
-    return { pokemon_experiencia: newExp, pokemon_level: newLevel, leveled_up }
+    // Si el Pokémon subió, sus niveles cuentan para el entrenador
+    let nivel_entrenador = null
+    if (leveled_up) {
+      const { rows: dueño } = await client.query(
+        `SELECT id_personaje FROM ${TPP} WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
+      if (dueño[0]?.id_personaje != null) {
+        nivel_entrenador = await recalcularSeguro(dueño[0].id_personaje, (t, p) => client.query(t, p))
+      }
+    }
+    return { pokemon_experiencia: newExp, pokemon_level: newLevel, leveled_up, nivel_entrenador }
   })
 }
 
@@ -699,7 +725,10 @@ const releasePokemon = async (id_personaje, id_personaje_pokemon) => {
     await client.query(`DELETE FROM ${TPS}   WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
     await client.query(`DELETE FROM ${TPPI}  WHERE personaje_pokemon_pending_improvement_pokemon_id = $1`, [id_personaje_pokemon])
     await client.query(`DELETE FROM ${TPP}   WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
-    return { ok: true, pokemon_apodo: apodo }
+
+    // Se pierden pokelvls, pero el nivel ya conseguido no se toca (regla 3)
+    const nivel = await recalcularSeguro(id_personaje, (t, p) => client.query(t, p))
+    return { ok: true, pokemon_apodo: apodo, nivel }
   })
 }
 
@@ -724,11 +753,18 @@ const transferPokemonToPersonaje = async (id_personaje, id_personaje_pokemon, id
               personaje_pokemon_is_in_game = false, pokemon_needs_rename = true
         WHERE id_personaje_pokemon = $2`,
       [id_destino, id_personaje_pokemon])
+
+    // Cambian los pokelvls de los DOS: el origen pierde y el destino gana
+    const run = (t, p) => client.query(t, p)
+    const nivelOrigen  = await recalcularSeguro(id_personaje, run)
+    const nivelDestino = await recalcularSeguro(id_destino,   run)
     return {
       ok: true,
       id_personaje_pokemon: Number(id_personaje_pokemon),
       pokemon_apodo: rows[0].pokemon_apodo,
       nombre_personaje: dest[0].nombre_personaje,
+      nivel_origen:  nivelOrigen,
+      nivel_destino: nivelDestino,
     }
   })
 }
@@ -1361,7 +1397,7 @@ const create = async (id_partida, user_id, data) => {
         Number(data.pokedollars) || 0,
         2, // personaje_prof: bono de proficiencia inicial (nivel 1)
         data.personaje_ac != null ? Number(data.personaje_ac) : null,
-        '1', // personaje_pokelvls inicial
+        1, // personaje_pokelvls inicial (la columna es INTEGER)
         data.ideales ?? null,
         data.falencias ?? null,
         data.conexiones ?? null,
@@ -1622,6 +1658,8 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
       )
     }
 
+    // Un Pokémon nuevo puede entrar en la cuenta de pokelvls y subir al entrenador
+    pp.nivel_entrenador = await recalcularSeguro(id_personaje, (t, p) => client.query(t, p))
     return pp
   })
 }
