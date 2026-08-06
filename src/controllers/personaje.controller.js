@@ -222,6 +222,9 @@ const setFeatAvailable = async (req, res, next) => {
 const removeFeat = async (req, res, next) => {
   try {
     const ok = await svc.removeFeat(req.params.id, req.params.idpf)
+    if (ok && ok.error === 'granted') {
+      return res.status(409).json({ error: 'Ese rasgo lo otorgan el origen o el background y no se puede quitar' })
+    }
     if (!ok) return res.status(404).json({ error: 'Rasgo no encontrado' })
     res.json({ ok: true })
   } catch (e) { next(e) }
@@ -269,7 +272,14 @@ const create = async (req, res, next) => {
     const personaje = await svc.create(Number(id_partida), req.user.user_id, data)
     if (!personaje) return res.status(404).json({ error: 'No estás asociado a esta partida' })
     res.status(201).json(personaje)
-  } catch (e) { next(e) }
+  } catch (e) {
+    // El origen o el background otorgan Skilled y no llegaron sus 3 elecciones:
+    // es un error del cliente, no del servidor. La transacción ya hizo rollback.
+    if (e.message === 'skilled_choices') {
+      return res.status(400).json({ error: 'Faltan las elecciones del feat Skilled' })
+    }
+    next(e)
+  }
 }
 
 // GET /api/personaje/:id/pokemon/pending-rename → Pokémon recién recibidos

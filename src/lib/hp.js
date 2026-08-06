@@ -6,8 +6,23 @@
 const norm = s => (s ?? '').toLowerCase()
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
 
-const FEAT_TOUGH = 12         // Tough: su bono de HP aplica por cada nivel del personaje
-const TOUGH_HP_PER_LEVEL = 2  // valor del bono (el feat de origen/background no trae sus bonos)
+// Un bono de healing se escribe "2 per lvl" si escala con el nivel, o como un
+// número suelto si es plano. Es la misma convención que usan los feats de
+// Pokémon, y evita reconocer los feats por id.
+const PER_LVL = /(\d+)\s*per\s*l/i
+
+// Lo que aporta UNA instancia del bono, o sea su valor a nivel 1. Es lo que la
+// creación del personaje hornea en personaje_hp.
+function healingBase(value) {
+  const m = PER_LVL.exec(String(value ?? ''))
+  return m ? Number(m[1]) : (Number(value) || 0)
+}
+
+// Lo que aporta el bono completo a un nivel dado.
+function healingAtLevel(value, level) {
+  const m = PER_LVL.exec(String(value ?? ''))
+  return m ? Number(m[1]) * Math.max(1, Number(level) || 1) : (Number(value) || 0)
+}
 
 // ── Prerequisitos de feats (nivel / stat / armor prof) ──
 function prereqMet(prereq, valor, ctx) {
@@ -53,18 +68,23 @@ function hpExtra(full) {
 
   for (const ef of (full.extra_feats || [])) {
     if (ctx && !featPrereqMet(ef.prereqs, ctx)) continue
-    const perLevel = Number(ef.feat_id) === FEAT_TOUGH ? level : 1
     for (const b of (ef.bonos || [])) {
       const type = norm(b.type)
       if (type === 'stat' && norm(b.llave) === 'con') statAdd += Number(b.value) || 0
-      else if (type === 'healing') healing += (Number(b.value) || 0) * perLevel
+      else if (type === 'healing') healing += healingAtLevel(b.value, level)
     }
   }
 
-  // Tough de origen/background: el HP guardado ya trae el bono una vez (nivel 1),
-  // faltan los niveles restantes.
+  // Feats de origen/background: son los únicos que la creación ya aplicó, y lo
+  // hizo horneando UNA instancia del bono (la de nivel 1) dentro de personaje_hp.
+  // Aquí solo se repone lo que falta por los niveles restantes: un bono plano no
+  // aporta nada extra, uno "N per lvl" aporta N × (nivel − 1).
+  // Se filtra por llave 'hp' para calcar exactamente lo que hornea el wizard.
   for (const f of [full.origin_feat, full.background_feat]) {
-    if (Number(f?.feat_id) === FEAT_TOUGH) healing += TOUGH_HP_PER_LEVEL * (level - 1)
+    for (const b of (f?.bonos || [])) {
+      if (norm(b.type) !== 'healing' || norm(b.llave) !== 'hp') continue
+      healing += healingAtLevel(b.value, level) - healingBase(b.value)
+    }
   }
   for (const sp of (full.specializations || [])) {
     for (const b of (sp.bonos || [])) {
@@ -100,16 +120,14 @@ function pokemonCon(stats, feats) {
   return (Number(stats?.pokemon_con) || 0) + (Number(stats?.pokemon_con_bonus) || 0) + featAdd
 }
 
-// Healing que aportan los feats del Pokémon. El valor puede venir como
-// "2 per lvl" (se multiplica por el nivel) o como un número suelto.
+// Healing que aportan los feats del Pokémon. Los feats de Pokémon no se hornean
+// en ningún lado, así que van completos.
 function pokemonHealing(feats, level) {
-  const lvl = Math.max(1, Number(level) || 1)
   let total = 0
   for (const f of (feats || [])) {
     for (const b of (f.bonos || [])) {
       if (norm(b.type) !== 'healing') continue
-      const m = /(\d+)\s*per\s*l/i.exec(String(b.value ?? ''))
-      total += m ? Number(m[1]) * lvl : (Number(b.value) || 0)
+      total += healingAtLevel(b.value, level)
     }
   }
   return total
@@ -129,4 +147,7 @@ function effectivePokemonMaxHp(pp, stats, feats) {
   return (Number(pp?.pokemon_hp) || 0) + pokemonHpExtra({ stats, feats, level: pp?.pokemon_level })
 }
 
-module.exports = { hpExtra, effectiveMaxHp, pokemonCon, pokemonHpExtra, effectivePokemonMaxHp }
+module.exports = {
+  hpExtra, effectiveMaxHp, pokemonCon, pokemonHpExtra, effectivePokemonMaxHp,
+  healingBase, healingAtLevel,
+}

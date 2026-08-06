@@ -868,8 +868,21 @@ const findFullById = async (id_personaje) => {
   const featIds = [personaje.origin_feat_id, personaje.background_feat_id].filter(Boolean)
   let originFeat = null, backgroundFeat = null
   if (featIds.length) {
+    // Los bonos salen del catálogo (feats_bonus), no de personaje_feat_bonus:
+    // estos feats no se insertan en personaje_feat, los otorga el origen o el
+    // background. Vienen sin resolver, así que las llaves 'any' no sirven aquí;
+    // solo se consumen los bonos concretos (healing, saving).
     const { rows: featRows } = await query(
-      `SELECT * FROM "${SCHEMA}"."feats" WHERE feat_id = ANY($1)`, [featIds]
+      `SELECT f.*,
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                  'type',  fb.feats_bonus_type,
+                  'llave', fb.feats_bonus_llave,
+                  'value', fb.feats_bonus_valor
+                ) ORDER BY fb.id_feats_bonus)
+                FROM ${TFB} fb WHERE fb.id_feat = f.feat_id
+              ), '[]') AS bonos
+       FROM "${SCHEMA}"."feats" f WHERE f.feat_id = ANY($1)`, [featIds]
     )
     originFeat     = featRows.find(f => f.feat_id === personaje.origin_feat_id)     || null
     backgroundFeat = featRows.find(f => f.feat_id === personaje.background_feat_id) || null
@@ -988,6 +1001,31 @@ const findFeats = async (id_personaje) => {
 //   - stat fijo / healing / otros → se copian tal cual
 //   - stat 'any' o 'x or y' → se resuelven con las elecciones del jugador (choices por índice)
 // NO modifica personaje_stats. Devuelve { error } o el registro creado con el detalle del feat.
+// Skilled (feat 10) no tiene filas en feats_bonus: su forma es exactamente 3
+// elecciones entre proficiencias de skill y textos de 'Tool Prof'. Traduce esas
+// elecciones a filas de personaje_feat_bonus, validándolas contra el catálogo.
+// Lo usan los dos caminos por los que puede llegar el feat: el lápiz (addFeat) y
+// la creación, cuando lo otorgan el origen o el background.
+//   skills → una fila por skill (prof)
+//   textos → una sola fila (llave 'Tool Prof') unida por el separador
+const skilledBonusRows = async (choice) => {
+  const sk     = choice || {}
+  const skills = [...new Set((Array.isArray(sk.skills) ? sk.skills : []).map(s => (s || '').trim()).filter(Boolean))]
+  const texts  = (Array.isArray(sk.texts) ? sk.texts : []).map(t => (t || '').toString().trim()).filter(Boolean)
+  if (skills.length + texts.length !== 3) return { error: 'choices' }
+
+  const rows = []
+  if (skills.length) {
+    const { rows: valid } = await query(
+      `SELECT skill_name FROM ${TSKILLS} WHERE lower(skill_name) = ANY($1)`, [skills.map(s => s.toLowerCase())])
+    const validSet = new Set(valid.map(r => r.skill_name.toLowerCase()))
+    if (skills.some(s => !validSet.has(s.toLowerCase()))) return { error: 'choices' }
+    for (const s of skills) rows.push({ type: 'skill', llave: s, value: 'prof' })
+  }
+  if (texts.length) rows.push({ type: 'text', llave: 'Tool Prof', value: texts.join(TEXT_SEP) })
+  return { rows }
+}
+
 const addFeat = async (id_personaje, feat_id, choices = {}) => {
   const { rows: fRows } = await query(`SELECT * FROM ${TFEATS} WHERE feat_id = $1`, [feat_id])
   const feat = fRows[0]
@@ -1098,19 +1136,10 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
   }
 
   // Manejo especial: Skilled (feat 10) — exactamente 3 entre proficiencias de skill y textos de 'Tool Prof'.
-  // Skills → una fila por skill (prof); textos → una sola fila (llave 'Tool Prof') unida por el separador.
   if (Number(feat_id) === FEAT_SKILLED) {
-    const sk = (choices && choices.skilled) || {}
-    const skills = [...new Set((Array.isArray(sk.skills) ? sk.skills : []).map(s => (s || '').trim()).filter(Boolean))]
-    const texts  = (Array.isArray(sk.texts) ? sk.texts : []).map(t => (t || '').toString().trim()).filter(Boolean)
-    if (skills.length + texts.length !== 3) return { error: 'choices' }
-    if (skills.length) {
-      const { rows: valid } = await query(`SELECT skill_name FROM ${TSKILLS} WHERE lower(skill_name) = ANY($1)`, [skills.map(s => s.toLowerCase())])
-      const validSet = new Set(valid.map(r => r.skill_name.toLowerCase()))
-      if (skills.some(s => !validSet.has(s.toLowerCase()))) return { error: 'choices' }
-      for (const s of skills) rowsToInsert.push({ type: 'skill', llave: s, value: 'prof' })
-    }
-    if (texts.length) rowsToInsert.push({ type: 'text', llave: 'Tool Prof', value: texts.join(TEXT_SEP) })
+    const filas = await skilledBonusRows(choices && choices.skilled)
+    if (filas.error) return { error: filas.error }
+    rowsToInsert.push(...filas.rows)
   }
 
   return transaction(async (client) => {
@@ -1197,7 +1226,30 @@ const setFeatAvailable = async (id_personaje, personaje_feat_id, is_available) =
 }
 
 // Elimina un feat extra del personaje (personaje_feat). Devuelve true si se borró.
+// Instancia de personaje_feat que vino del origen o del background y por tanto
+// no se puede borrar: el personaje no eligió tenerla y no habría forma de
+// reclamarla de nuevo (background_feat_id seguiría diciendo que la tiene).
+// Cuando el feat es repetible puede haber varias filas del mismo feat_id; la
+// protegida es siempre la más antigua, que es la que insertó la creación.
+const featDeCreacionId = async (id_personaje) => {
+  const { rows } = await query(
+    `SELECT MIN(pf.personaje_feat_id) AS id
+       FROM ${TPF} pf
+       JOIN ${T} p ON p.id_personaje = pf.personaje_id
+       LEFT JOIN ${TORIGINS}     o ON o.origin_id     = p.personaje_origin
+       LEFT JOIN ${TBACKGROUNDS} b ON b.background_id = p.personaje_background
+      WHERE pf.personaje_id = $1
+        AND pf.feat_id IN (o.origin_feat_id, b.background_feat_id)
+      GROUP BY pf.feat_id`,
+    [id_personaje]
+  )
+  return new Set(rows.map(r => Number(r.id)))
+}
+
 const removeFeat = async (id_personaje, personaje_feat_id) => {
+  const protegidos = await featDeCreacionId(id_personaje)
+  if (protegidos.has(Number(personaje_feat_id))) return { error: 'granted' }
+
   return transaction(async (client) => {
     // La proficiencia de arma que otorgó este feat se pierde con él. Hay que
     // limpiarla a mano: la FK es ON DELETE SET NULL y un prof_feat_id nulo
@@ -1268,6 +1320,15 @@ const create = async (id_partida, user_id, data) => {
   const bonus = data.stats_bonus || {}
   const hp    = Number(data.personaje_hp) || 0
 
+  // personaje_hp guarda solo la base (6 + healing horneado de origen/background);
+  // el máximo que se muestra le suma el modificador de CON en vivo. El HP actual
+  // es un valor absoluto de combate, así que tiene que nacer en ESE máximo y no
+  // en la base: de lo contrario el personaje aparece herido apenas creado.
+  // A nivel 1 el único extra es el modificador de CON: el healing de origen y
+  // background ya viene horneado, y todavía no hay feats ni especialidades.
+  const conTotal = (Number(data.stats_base?.personaje_con) || 0) + (Number(data.stats_bonus?.personaje_con) || 0)
+  const hpInicial = hp + Math.floor((conTotal - 10) / 2)
+
   return transaction(async (client) => {
     // ── 1. personaje ──────────────────────────────────────────────
     const { rows: pRows } = await client.query(
@@ -1287,8 +1348,8 @@ const create = async (id_partida, user_id, data) => {
         data.personaje_background ?? null,
         data.personaje_level ?? 1,
         data.personaje_hit_dice ?? null,
-        hp,
-        hp,
+        hp,          // personaje_hp: solo la base
+        hpInicial,   // personaje_current_hp: el máximo efectivo, para nacer a tope
         data.saving_throw_prof ?? null,
         Number(data.pokedollars) || 0,
         2, // personaje_prof: bono de proficiencia inicial (nivel 1)
@@ -1385,6 +1446,42 @@ const create = async (id_partida, user_id, data) => {
          VALUES ($1,$2,$3)`,
         [d.tipo ?? null, d.texto ?? null, id_personaje]
       )
+    }
+
+    // ── 6. Skilled otorgado por el origen o el background ─────────
+    // Se persiste como un feat agregado al personaje (personaje_feat +
+    // personaje_feat_bonus), igual que si se hubiera puesto con el lápiz: así
+    // sus proficiencias las lee la misma maquinaria y no hay un segundo camino.
+    const { rows: skRows } = await client.query(
+      `SELECT o.origin_feat_id, b.background_feat_id
+         FROM ${T} p
+         LEFT JOIN ${TORIGINS}     o ON o.origin_id     = p.personaje_origin
+         LEFT JOIN ${TBACKGROUNDS} b ON b.background_id = p.personaje_background
+        WHERE p.id_personaje = $1`,
+      [id_personaje]
+    )
+    const daSkilled = [skRows[0]?.origin_feat_id, skRows[0]?.background_feat_id]
+      .some(id => Number(id) === FEAT_SKILLED)
+    if (daSkilled) {
+      const filas = await skilledBonusRows(data.skilled_choices)
+      // Sin elecciones válidas se aborta la creación en vez de crear el personaje
+      // sin el feat: quedaría debiendo 3 proficiencias sin rastro de que las
+      // debe. Skilled es repetible, así que agregarlo luego con el lápiz no
+      // distinguiría entre reponer lo que faltó y tomarlo una segunda vez.
+      if (filas.error) throw new Error('skilled_choices')
+      const { rows: pfRows } = await client.query(
+        `INSERT INTO ${TPF} (personaje_id, feat_id) VALUES ($1, $2) RETURNING personaje_feat_id`,
+        [id_personaje, FEAT_SKILLED]
+      )
+      const pfId = pfRows[0].personaje_feat_id
+      for (const r of filas.rows) {
+        await client.query(
+          `INSERT INTO ${TPFB}
+             (personaje_feat_bonus_personaje_feat_id, personaje_feat_bonus_type, personaje_feat_bonus_llave, personaje_feat_bonus_value)
+           VALUES ($1, $2, $3, $4)`,
+          [pfId, r.type ?? null, r.llave ?? null, r.value ?? null]
+        )
+      }
     }
 
     return personaje
