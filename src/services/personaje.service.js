@@ -1,6 +1,7 @@
 const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
 const { recalcularSeguro } = require('./trainer_level.service')
+const { stabExtraDelPersonaje } = require('../lib/stab')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -405,7 +406,10 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
      ORDER BY pp.id_personaje_pokemon`,
     params
   )
-  return rows.map(fixMedia)
+  // El bono de STAB de la ruta se calcula al leer: depende de las
+  // especializaciones, que se ganan en niveles posteriores.
+  const extra = await stabExtraDelPersonaje(id_personaje)
+  return rows.map(r => fixMedia({ ...r, pokemon_stab_extra: extra.get(Number(r.id_personaje_pokemon)) || 0 }))
 }
 
 // Marca (o desmarca) el Pokémon invocado. Solo uno puede estar en juego a la vez,
@@ -520,7 +524,13 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
   // pokemon_current_hp queda intacto: es un valor absoluto de combate.
   const stats = statsRows[0] || null
   const pokemon_hp = effectivePokemonMaxHp(pp, stats, feats)
-  return { ...fixMedia(pp), pokemon_hp, stats, skills, moves, pasivas, exp_next, feats }
+  // Mismo bono de STAB que en el listado, resuelto al leer
+  const stabExtra = pp.id_personaje
+    ? (await stabExtraDelPersonaje(pp.id_personaje)).get(Number(id_personaje_pokemon)) || 0
+    : 0
+
+  return {
+    pokemon_stab_extra: stabExtra, ...fixMedia(pp), pokemon_hp, stats, skills, moves, pasivas, exp_next, feats }
 }
 
 // Suma experiencia a un Pokémon del entrenador. Sube máximo 1 nivel y, si sube,

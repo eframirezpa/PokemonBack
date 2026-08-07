@@ -20,6 +20,7 @@
 //   Trainer Path Feature      → personaje_path_bonus, los bonos de la ruta ya
 //                               elegida para el nivel que se confirma
 const { query, transaction, SCHEMA } = require('../config/db')
+const { previewStab } = require('../lib/stab')
 
 const T     = `"${SCHEMA}"."personaje"`
 const TS    = `"${SCHEMA}"."personaje_stats"`
@@ -93,6 +94,9 @@ const listPending = async (id_personaje) => {
     `SELECT personaje_hit_dice FROM ${T} WHERE id_personaje = $1`, [id_personaje])
   const hitDice = hd[0]?.personaje_hit_dice ?? null
 
+  // Qué Pokémon ganarían STAB, para la ventana del rasgo stab_bonus
+  const stabPreview = await previewStab(id_personaje)
+
   let bonosPorNivel = new Map()
   let rasgoPorNivel = new Map()
   if (pathId != null) {
@@ -129,6 +133,7 @@ const listPending = async (id_personaje) => {
       // Cada bono con su clasificación, para que la ventana sepa si tiene que
       // pedir una elección, anunciar una skill fija, o solo mostrarlo
       path_bonos: (bonosPorNivel.get(n) ?? []).map(b => ({ ...b, regla: clasificarBono(b) })),
+      stab_preview: stabPreview,
       hit_dice: hitDice,
       hit_dice_max: hitDiceMax(hitDice),
     }
@@ -147,6 +152,9 @@ const clasificarBono = (b) => {
   const tipo   = norm(b.path_bonus_type)
   const llave  = norm(b.path_bonus_key)
   const target = norm(b.path_bonus_target)
+  // STAB: no pide elección. Se persiste una marca y el bono real se calcula al
+  // leer, porque depende de las especializaciones, que llegan en niveles 7 y 18.
+  if (tipo === 'stab_bonus') return { modo: 'stab', valor: '1', target: 'all_pokemon' }
   if (tipo !== 'skill_proficiency' && tipo !== 'skill_expertise') return null
   const valor = tipo === 'skill_expertise' ? 'expert' : 'prof'
   if (llave === 'chosen_skill') {
@@ -203,6 +211,19 @@ const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas
   for (const b of rows) {
     const c = clasificarBono(b)
     if (!c) continue                       // narrativa: no se persiste
+    if (c.modo === 'stab') {
+      // Fila fija: la llave y el valor no varían, lo que cambia es a cuántos
+      // Pokémon alcanza, y eso se resuelve en lib/stab.js al leer.
+      await run(
+        `INSERT INTO ${TPPB} (
+           personaje_path_bonus_personaje_id, personaje_path_bonus_type,
+           personaje_path_bonus_llave, personaje_path_bonus_value,
+           personaje_path_bonus_target, personaje_path_bonus_level
+         ) VALUES ($1, 'stab_bonus', 'stab_bonus', '1', 'all_pokemon', $2)`,
+        [id_personaje, nivel])
+      n++
+      continue
+    }
     if (c.modo === 'fija') {
       // La llave trae la skill en snake_case; se guarda con su nombre real
       const nombre = await skillPorLlave(c.llave, run)
