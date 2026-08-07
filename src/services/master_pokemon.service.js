@@ -298,7 +298,7 @@ const levelPreview = async (id_pokemon, levelRaw) => {
 // `overrides` opcionales (usados por el creador del master): type_1, type_2 (ids),
 // hp, stats {dex,str,...} (base) y skills [{ id_skill, pref, expert }]. Lo no provisto
 // se deriva de la pokédex, igual que en la creación del jugador.
-const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie, type_1, type_2, hp: hpOverride, stats: statsOverride, skills: skillsOverride, level: levelOverride, proficiency: profOverride, experiencia: expOverride, feats }) => {
+const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie, type_1, type_2, hp: hpOverride, stats: statsOverride, skills: skillsOverride, level: levelOverride, proficiency: profOverride, experiencia: expOverride, feats, pokemon_tag }) => {
   const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [id_pokemon])
   const pk = pkRows[0]
   if (!pk) return null
@@ -343,8 +343,9 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
          pokemon_sense_1_name, pokemon_sense_1_value,
          pokemon_sense_2_name, pokemon_sense_2_value,
          personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf,
-         personaje_pokemon_type_1, personaje_pokemon_type_2, pokemon_experiencia
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)
+         personaje_pokemon_type_1, personaje_pokemon_type_2, pokemon_experiencia,
+         pokemon_tag
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)
        RETURNING *`,
       [
         id_master, id_pokemon, apodo ?? pk.pokemon_name, hp, hp,
@@ -361,6 +362,8 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
         pk.pokemon_sense_2_name ?? null, pk.pokemon_sense_2_value ?? null,
         0, 0, 0,
         type1Id, type2Id, experiencia,
+        // Etiqueta editable por el máster; en blanco cae al default de la tabla
+        (pokemon_tag ?? '').toString().trim() || 'created',
       ]
     )
     const mp = mpRows[0]
@@ -576,6 +579,9 @@ const TRANSFER_COLS = [
   'pokemon_sense_2_name', 'pokemon_sense_2_value',
   'personaje_pokemon_exahust_lvl', 'personaje_pokemon_dsts', 'personaje_pokemon_dstf',
   'personaje_pokemon_type_1', 'personaje_pokemon_type_2', 'pokemon_experiencia',
+  // La etiqueta viaja con el Pokémon: uno entregado por el máster conserva la
+  // suya y no queda como 'starter', que es el default de personaje_pokemon.
+  'pokemon_tag',
 ]
 
 const TPP    = `"${SCHEMA}"."personaje_pokemon"`
