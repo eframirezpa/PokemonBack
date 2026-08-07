@@ -11,10 +11,11 @@
 //  4. Subir de nivel puede otorgar un pokéslot (niveles 5, 10 y 15). Un slot
 //     más hace entrar otro Pokémon en la cuenta, lo que sube pokelvls, lo que
 //     puede desencadenar otro nivel. Por eso se recalcula hasta estabilizar.
-//  5. Un Pokémon RECIBIDO (pokemon_recibido) aporta como máximo el nivel del
-//     entrenador. Recibir uno de nivel 20 siendo nivel 3 no regala niveles, y
-//     su aporte crece según el entrenador sube. El nivel es a la vez entrada y
-//     salida del cálculo, otra razón para iterar hasta que se estabilice.
+//  5. Cuánto aporta cada Pokémon depende de su pokemon_tag: 'starter' completo,
+//     'transfer' nada, y el resto topado al nivel del entrenador. Su propio
+//     starter (personaje_starter_pokemon_id) aporta completo aunque vuelva
+//     etiquetado como 'transfer'. Ver pokeLevelsCon. Como el nivel es a la vez
+//     entrada y salida del cálculo, hay que iterar hasta que se estabilice.
 //
 // Recalcular es idempotente: si nada cambió, no escribe.
 const { query, SCHEMA } = require('../config/db')
@@ -29,24 +30,38 @@ const NIVEL_MAX = 20
 // Suma de los `slots` aportes más altos. Mínimo 1: un entrenador sin Pokémon
 // sigue contando 1, igual que al crear el personaje.
 //
-// Un Pokémon RECIBIDO (transferido por el máster o por otro entrenador) aporta
-// como máximo el nivel del entrenador: recibir uno de nivel 20 siendo nivel 3
-// no regala niveles, y su aporte va creciendo a medida que el entrenador sube.
-// Los que consiguió por su cuenta aportan su nivel completo; si se les topara
-// también, ningún entrenador podría subir nunca -- su propio Pokémon jamás
-// aportaría más que él y el cálculo se quedaría clavado en el nivel 1.
+// Cuánto aporta cada Pokémon lo decide su pokemon_tag:
 //
-// El orden es por APORTE y no por nivel bruto: si un recibido de nivel 10 está
-// topado a 5 y hay uno propio de nivel 7, entra el propio, que es el que más
+//   starter   → su nivel completo. Es el inicial del lobby, lo único que un
+//               entrenador consigue por su cuenta; si también se le topara,
+//               nadie podría subir nunca (su propio Pokémon jamás aportaría más
+//               que él y el cálculo se quedaría clavado en el nivel 1).
+//   transfer  → nada. Viene de otro entrenador, así que no vale para subir.
+//   resto     → como máximo el nivel del entrenador. Cubre 'created' y
+//               cualquier etiqueta que el máster invente: todo lo que sale de
+//               sus manos se topa, para que recibir un nivel 20 siendo nivel 3
+//               no regale niveles. El tope se afloja según el entrenador sube.
+//
+// EXCEPCIÓN: el Pokémon cuyo id figura en personaje_starter_pokemon_id aporta
+// completo pase lo que pase. Es el propio starter del entrenador: si lo entregó
+// y se lo devolvieron, llega con tag 'transfer' pero sigue siendo suyo.
+//
+// El orden es por APORTE y no por nivel bruto: si un 'created' de nivel 10 está
+// topado a 5 y hay un starter de nivel 7, entra el starter, que es el que más
 // suma. Ordenar por el nivel bruto elegiría el peor de los dos.
 const pokeLevelsCon = async (id_personaje, slots, nivelTrainer, run) => {
   const { rows } = await run(
     `SELECT COALESCE(SUM(aporte), 0)::int AS total
-       FROM (SELECT CASE WHEN pokemon_recibido
-                         THEN LEAST(pokemon_level, $3::int)
-                         ELSE pokemon_level END AS aporte
-               FROM ${TPP}
-              WHERE id_personaje = $1
+       FROM (SELECT CASE
+                      WHEN pp.id_personaje_pokemon =
+                           (SELECT personaje_starter_pokemon_id FROM ${T} WHERE id_personaje = $1)
+                        THEN pp.pokemon_level
+                      WHEN lower(coalesce(pp.pokemon_tag, '')) = 'transfer' THEN 0
+                      WHEN lower(coalesce(pp.pokemon_tag, '')) = 'starter'  THEN pp.pokemon_level
+                      ELSE LEAST(pp.pokemon_level, $3::int)
+                    END AS aporte
+               FROM ${TPP} pp
+              WHERE pp.id_personaje = $1
               ORDER BY aporte DESC
               LIMIT $2::int) mejores`,
     [id_personaje, Math.max(0, Number(slots) || 0), Math.max(1, Number(nivelTrainer) || 1)]

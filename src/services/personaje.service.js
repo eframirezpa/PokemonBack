@@ -747,11 +747,14 @@ const transferPokemonToPersonaje = async (id_personaje, id_personaje_pokemon, id
       `SELECT nombre_personaje FROM ${T} WHERE id_personaje = $1`, [id_destino])
     if (!dest.length) return { error: 'personajenotfound' }
 
+    // pokemon_tag = 'transfer': viene de otro entrenador, así que no cuenta
+    // para los pokelvls del destino. Se marca ANTES de recalcular, que es lo
+    // que lee el cálculo.
     await client.query(
       `UPDATE ${TPP}
           SET id_personaje = $1, pokemon_en_equipo = false,
               personaje_pokemon_is_in_game = false, pokemon_needs_rename = true,
-              pokemon_recibido = true
+              pokemon_tag = 'transfer'
         WHERE id_personaje_pokemon = $2`,
       [id_destino, id_personaje_pokemon])
 
