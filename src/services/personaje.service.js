@@ -1536,6 +1536,15 @@ const create = async (id_partida, user_id, data) => {
 // Agrega un Pokémon (especie de la pokédex) a un personaje, con sus stats,
 // skills y movimientos. Deriva la mayor parte de los datos desde la pokédex.
 const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie }) => {
+  // Esta vía es la del lobby y sirve para UNA cosa: entregar el starter. Una vez
+  // entregado no se puede volver a usar, ni aunque el entrenador se haya quedado
+  // sin Pokémon: los demás se consiguen dentro de la partida, por captura o
+  // transferencia, que van por otras rutas y no pasan por aquí.
+  const { rows: stRows } = await query(
+    `SELECT personaje_get_starter_pokemon FROM ${T} WHERE id_personaje = $1`, [id_personaje])
+  if (!stRows[0]) return null
+  if (stRows[0].personaje_get_starter_pokemon) return { error: 'starter' }
+
   const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [id_pokemon])
   const pk = pkRows[0]
   if (!pk) return null
