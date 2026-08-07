@@ -95,7 +95,10 @@ function hpExtra(full) {
   }
 
   const con = (Number(stats.personaje_con) || 0) + (Number(stats.personaje_con_bonus) || 0) + statAdd
-  return Math.floor((con - 10) / 2) + healing
+  // El modificador de CON cuenta POR NIVEL, igual que en los Pokémon: en cada
+  // subida se tira el dado de golpe y se suma el modificador. A nivel 1 el
+  // resultado es idéntico al de antes, así que nadie ve cambiar su vida.
+  return Math.floor((con - 10) / 2) * level + healing
 }
 
 // Máximo efectivo = base guardada + hpExtra

@@ -1,5 +1,6 @@
 const router = require('express').Router()
 const ctrl   = require('../controllers/personaje.controller')
+const mejoras = require('../controllers/personaje_improvement.controller')
 const pkFeatCtrl = require('../controllers/personaje_pokemon_feat.controller')
 const improveCtrl = require('../controllers/personaje_pokemon_improvement.controller')
 const { authenticate } = require('../middleware/auth.middleware')
@@ -29,6 +30,11 @@ router.post('/:id/pokemon/:idpp/improvement/asi',   authenticate, improveCtrl.co
 router.get('/:id/pokemon/pending-rename', authenticate, ctrl.pendingRenames)
 router.get('/:id/pokemon',         authenticate, ctrl.getPokemon)
 router.post('/:id/pokemon',        authenticate, ctrl.addPokemon)
+
+// Mejoras de nivel del entrenador
+router.get('/:id/improvements',                        authenticate, mejoras.getPending)
+router.get('/:id/improvements/specializations',        authenticate, mejoras.getSpecs)
+router.post('/:id/improvements/:pendingId/confirm',    authenticate, mejoras.confirm)
 router.patch('/:id/pokemon/:idpp/combate', authenticate, ctrl.updatePokemonCombate)
 router.get('/:id/pokemon/:idpp',   authenticate, ctrl.getPokemonDetail)
 router.patch('/:id/pokemon/:idpp/en-equipo', authenticate, ctrl.updatePokemonEnEquipo)

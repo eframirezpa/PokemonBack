@@ -24,6 +24,7 @@ const T    = `"${SCHEMA}"."personaje"`
 const TPP  = `"${SCHEMA}"."personaje_pokemon"`
 const TREQ = `"${SCHEMA}"."trainer_pokemon_level_requirements"`
 const TTL  = `"${SCHEMA}"."trainer_levels"`
+const TPI  = `"${SCHEMA}"."personaje_pending_improvement"`
 
 const NIVEL_MAX = 20
 
@@ -94,7 +95,7 @@ const filaNivel = async (nivel, run) => {
  */
 const recalcular = async (id_personaje, run = query) => {
   const { rows: pRows } = await run(
-    `SELECT personaje_level, personaje_pokelvls, personaje_pokeslots, personaje_prof
+    `SELECT personaje_level, personaje_pokelvls, personaje_pokeslots, personaje_prof, personaje_sr
        FROM ${T} WHERE id_personaje = $1`, [id_personaje])
   if (!pRows[0]) return null
 
@@ -102,6 +103,7 @@ const recalcular = async (id_personaje, run = query) => {
   const pokelvlsPrevio = Number(pRows[0].personaje_pokelvls)  || 1
   const slotsPrevio    = Number(pRows[0].personaje_pokeslots) || 3
   const profPrevio     = Number(pRows[0].personaje_prof)      || 2
+  const srPrevio       = Number(pRows[0].personaje_sr)        || 0
 
   let nivel = nivelPrevio
   let slots = slotsPrevio
@@ -129,27 +131,54 @@ const recalcular = async (id_personaje, run = query) => {
   const fila = await filaNivel(nivel, run)
   const prof = Number(fila?.trainer_level_proficiency_bonus) || profPrevio
 
+  // El SR se toca SOLO cuando el nivel sube de verdad, no en cada recálculo.
+  // Los otros tres son derivados y volver a escribirlos no cambia nada, pero el
+  // SR se gasta durante la partida: refrescarlo porque un Pokémon subió de nivel
+  // se lo devolvería entero. Se sube al tope del nivel nuevo, y nunca se baja
+  // por si el máster concedió alguno de más.
+  const subio = nivel > nivelPrevio
+  const sr = subio
+    ? Math.max(srPrevio, Number(fila?.trainer_level_max_sr) || srPrevio)
+    : srPrevio
+
   const cambio = pokelvls !== pokelvlsPrevio || nivel !== nivelPrevio
-              || slots !== slotsPrevio || prof !== profPrevio
+              || slots !== slotsPrevio || prof !== profPrevio || sr !== srPrevio
   if (cambio) {
     await run(
       `UPDATE ${T}
           SET personaje_pokelvls   = $2,
               personaje_level      = $3,
               personaje_pokeslots  = $4,
-              personaje_prof       = $5
+              personaje_prof       = $5,
+              personaje_sr         = $6
         WHERE id_personaje = $1`,
-      [id_personaje, pokelvls, nivel, slots, prof]
+      [id_personaje, pokelvls, nivel, slots, prof, sr]
     )
   }
 
   // Los niveles atravesados, para que la UI sepa qué anunciar
   let ganados = []
-  if (nivel > nivelPrevio) {
+  if (subio) {
     const { rows } = await run(
       `SELECT * FROM ${TTL} WHERE trainer_level > $1 AND trainer_level <= $2 ORDER BY trainer_level`,
       [nivelPrevio, nivel])
     ganados = rows
+
+    // Un pendiente por nivel ganado. Las features se copian del catálogo: si
+    // este cambiara, lo que quedó pendiente sigue siendo lo prometido al subir.
+    // ON CONFLICT porque recalcular() corre en cada evento de Pokémon y no debe
+    // duplicar ni resucitar un nivel ya confirmado.
+    for (const g of ganados) {
+      await run(
+        `INSERT INTO ${TPI} (
+           personaje_pending_improvement_personaje_id,
+           personaje_pending_improvement_lvl,
+           personaje_pending_improvement_features
+         ) VALUES ($1, $2, $3)
+         ON CONFLICT ON CONSTRAINT personaje_pending_improvement_unico DO NOTHING`,
+        [id_personaje, g.trainer_level, g.trainer_level_features ?? null]
+      )
+    }
   }
 
   return {
@@ -158,7 +187,8 @@ const recalcular = async (id_personaje, run = query) => {
     nivel,    nivel_previo: nivelPrevio,
     pokeslots: slots, pokeslots_previo: slotsPrevio,
     prof,      prof_previo: profPrevio,
-    subio: nivel > nivelPrevio,
+    sr,        sr_previo: srPrevio,
+    subio,
     niveles_ganados: ganados,
     persistido: cambio,
   }

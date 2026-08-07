@@ -44,6 +44,8 @@ const MAX_POKEDOLLARS_TOTAL = 999999999 // máximo que se puede llegar a tener
 
 // Proficiencia (y por tanto STAB) de un Pokémon recién capturado, nivel 1
 const PROF_INICIAL = 2
+// SR con el que nace un entrenador: el trainer_level_max_sr del nivel 1
+const SR_INICIAL = 2
 
 // Stats válidos para los bonos de tipo 'stat'
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
@@ -253,14 +255,15 @@ const findParty = async (id_partida) => {
   return chars
 }
 
-// Actualiza campos de combate del personaje (HP actual, exhaust, dsts, dstf)
-const updateCombate = async (id_personaje, { current_hp, exhaust_lvl, dsts, dstf }) => {
+// Actualiza campos de combate del personaje (HP actual, exhaust, dsts, dstf, SR)
+const updateCombate = async (id_personaje, { current_hp, exhaust_lvl, dsts, dstf, sr }) => {
   const sets = [], params = []
   const add = (col, val) => { if (val !== undefined && val !== null) { params.push(val); sets.push(`${col} = $${params.length}`) } }
   add('personaje_current_hp', current_hp)
   add('personaje_exahust_lvl', exhaust_lvl)
   add('personaje_dsts', dsts)
   add('personaje_dstf', dstf)
+  add('personaje_sr', sr)
   if (!sets.length) return null
   params.push(id_personaje)
   const { rows } = await query(
@@ -393,6 +396,7 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
   const { rows } = await query(
     `SELECT pp.id_personaje_pokemon, pp.id_pokemon, pp.pokemon_apodo, pp.pokemon_level,
             pp.pokemon_experiencia, pp.pokemon_en_equipo, pp.pokemon_is_shiny, pp.personaje_pokemon_is_in_game,
+            pp.pokemon_tag,
             pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny,
             pk.pokemon_media_main, pk.pokemon_media_main_shiny
      FROM ${TPP} pp
@@ -446,9 +450,24 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
   const { rows: statsRows } = await query(
     `SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon]
   )
+  // La ruta del entrenador puede dar proficiencia a TODOS sus Pokémon
+  // (path_bonus con target all_pokemon). No se copia a pokemon_skills: se
+  // resuelve al leer, así que sirve también para los que llegan después.
   const { rows: skills } = await query(
-    `SELECT s.skill_name, s.skill_related_ability, ps.pokemon_skill_pref, ps.pokemon_skill_expert
-     FROM ${TPSK} ps JOIN ${TSKILLS} s ON s.skill_id = ps.id_skill
+    `SELECT s.skill_name, s.skill_related_ability,
+            (ps.pokemon_skill_pref OR pb.llave IS NOT NULL) AS pokemon_skill_pref,
+            ps.pokemon_skill_expert,
+            (pb.llave IS NOT NULL) AS por_ruta
+     FROM ${TPSK} ps
+     JOIN ${TSKILLS} s ON s.skill_id = ps.id_skill
+     JOIN ${TPP} pp ON pp.id_personaje_pokemon = ps.id_personaje_pokemon
+     LEFT JOIN (
+       SELECT personaje_path_bonus_personaje_id AS pid,
+              lower(personaje_path_bonus_llave) AS llave
+         FROM "${SCHEMA}"."personaje_path_bonus"
+        WHERE lower(personaje_path_bonus_target) = 'all_pokemon'
+          AND lower(personaje_path_bonus_value)  = 'prof'
+     ) pb ON pb.pid = pp.id_personaje AND pb.llave = lower(s.skill_name)
      WHERE ps.id_personaje_pokemon = $1
      ORDER BY ps.id_pokemon_skills`,
     [id_personaje_pokemon]
@@ -1009,6 +1028,22 @@ const findFullById = async (id_personaje) => {
     [id_personaje]
   )
 
+  // Ruta del entrenador y los bonos que ya le otorgó. Se aplican como los de
+  // feats: proficiencia o experticia en skills, según su value.
+  const { rows: pathRows } = await query(
+    `SELECT * FROM "${SCHEMA}"."paths" WHERE path_id = $1`, [personaje.personaje_path])
+  const pathRow = pathRows[0] || null
+  const { rows: pathBonosRows } = await query(
+    `SELECT personaje_path_bonus_id   AS id,
+            personaje_path_bonus_type  AS type,
+            personaje_path_bonus_llave AS llave,
+            personaje_path_bonus_value AS value,
+            personaje_path_bonus_target AS target,
+            personaje_path_bonus_level  AS level
+       FROM "${SCHEMA}"."personaje_path_bonus"
+      WHERE personaje_path_bonus_personaje_id = $1
+      ORDER BY personaje_path_bonus_level, personaje_path_bonus_id`, [id_personaje])
+
   return {
     ...personaje,
     stats:           statsRows[0] || null,
@@ -1022,6 +1057,8 @@ const findFullById = async (id_personaje) => {
     extra_feats:     extraFeatRows,
     armor_profs:     armorProfRows.map(r => r.armor_prof),
     specializations: specRows,
+    path:            pathRow,
+    path_bonos:      pathBonosRows,
   }
 }
 
@@ -1385,8 +1422,9 @@ const create = async (id_partida, user_id, data) => {
          saving_throw_prof, pokedollars_personaje, personaje_prof, personaje_ac,
          personaje_pokelvls, personaje_ideales, personaje_falencias, personaje_conexiones,
          personaje_speed, personaje_hit_dice_left,
-         personaje_exahust_lvl, personaje_dsts, personaje_dstf, personaje_pokeslots
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+         personaje_exahust_lvl, personaje_dsts, personaje_dstf, personaje_pokeslots,
+         personaje_sr
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        RETURNING *`,
       [
         data.nombre_personaje ?? null,
@@ -1409,6 +1447,7 @@ const create = async (id_partida, user_id, data) => {
         '1/1', // personaje_hit_dice_left inicial
         0, 0, 0, // personaje_exahust_lvl, personaje_dsts, personaje_dstf
         3, // personaje_pokeslots: ranuras de Pokémon iniciales
+        SR_INICIAL, // personaje_sr: el tope del nivel 1 en trainer_levels
       ]
     )
     const personaje = pRows[0]

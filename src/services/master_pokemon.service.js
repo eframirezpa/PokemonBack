@@ -226,6 +226,23 @@ const evolutionLine = async (id_pokemon) => {
 // Calcula los valores por defecto de un Pokémon del master según el nivel elegido:
 // stats entrenados (ASI + Peak Power), proficiencia, tiradas de HP, experiencia y
 // movimientos por defecto (4 al azar del pool ampliado por "New Moves").
+// Valor por defecto REAL de master_pokemon.pokemon_tag, leído del esquema.
+// Así el formulario y el INSERT usan el mismo valor que la base, en vez de un
+// literal repetido en tres sitios que se desincroniza al cambiar el DEFAULT.
+// Se cachea: el esquema no cambia en caliente.
+let _tagDefault = null
+const tagPorDefecto = async () => {
+  if (_tagDefault !== null) return _tagDefault
+  const { rows } = await query(
+    `SELECT column_default FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name = 'master_pokemon' AND column_name = 'pokemon_tag'`,
+    [SCHEMA])
+  // column_default llega como "'created'::text"
+  const m = /^'(.*)'::/.exec(rows[0]?.column_default || '')
+  _tagDefault = m ? m[1] : 'created'
+  return _tagDefault
+}
+
 const levelPreview = async (id_pokemon, levelRaw) => {
   const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [id_pokemon])
   const pk = pkRows[0]
@@ -292,6 +309,7 @@ const levelPreview = async (id_pokemon, levelRaw) => {
     hp_base: Number(pk.pokemon_hit_points) || 0, hp_rolls: hpRolls,
     experiencia, evolution_line: line,
     default_moves: defaultMoves.map(m => ({ move_id: m.move_id, move_name: m.move_name, move_type: m.move_type })),
+    pokemon_tag_default: await tagPorDefecto(),
   }
 }
 
@@ -362,8 +380,8 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
         pk.pokemon_sense_2_name ?? null, pk.pokemon_sense_2_value ?? null,
         0, 0, 0,
         type1Id, type2Id, experiencia,
-        // Etiqueta editable por el máster; en blanco cae al default de la tabla
-        (pokemon_tag ?? '').toString().trim() || 'created',
+        // Etiqueta editable por el máster; en blanco cae al DEFAULT de la tabla
+        (pokemon_tag ?? '').toString().trim() || await tagPorDefecto(),
       ]
     )
     const mp = mpRows[0]
@@ -706,7 +724,7 @@ const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) =
 }
 
 module.exports = {
-  findPokemon, findPokemonDetail, updatePokemonCombate, levelPreview,
+  findPokemon, findPokemonDetail, updatePokemonCombate, levelPreview, tagPorDefecto,
   setPokemonEnEquipo, setPokemonEnJuego, addPokemon, updatePokemon, removePokemon,
   transferToPersonaje,
 }

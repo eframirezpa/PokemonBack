@@ -20,8 +20,8 @@ const getById = async (req, res, next) => {
 // PATCH /api/personaje/:id/combate → HP actual / exhaust / dsts / dstf del personaje
 const updateCombate = async (req, res, next) => {
   try {
-    const { current_hp, exhaust_lvl, dsts, dstf } = req.body
-    res.json(await svc.updateCombate(req.params.id, { current_hp, exhaust_lvl, dsts, dstf }) || {})
+    const { current_hp, exhaust_lvl, dsts, dstf, sr } = req.body
+    res.json(await svc.updateCombate(req.params.id, { current_hp, exhaust_lvl, dsts, dstf, sr }) || {})
   } catch (e) { next(e) }
 }
 
