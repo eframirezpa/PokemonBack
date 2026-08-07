@@ -615,8 +615,10 @@ const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) =
     const cols = TRANSFER_COLS.join(', ')
     const refs = TRANSFER_COLS.map(c => `o.${c}`).join(', ')
     const { rows: ins } = await client.query(
-      `INSERT INTO ${TPP} (id_personaje, pokemon_en_equipo, personaje_pokemon_is_in_game, pokemon_needs_rename, ${cols})
-       SELECT $2, $3, false, true, ${refs} FROM ${TMP} o WHERE o.id_master_pokemon = $1
+      // pokemon_recibido = true: llega de fuera, así que su aporte a los
+      // pokelvls del entrenador queda topado a su nivel.
+      `INSERT INTO ${TPP} (id_personaje, pokemon_en_equipo, personaje_pokemon_is_in_game, pokemon_needs_rename, pokemon_recibido, ${cols})
+       SELECT $2, $3, false, true, true, ${refs} FROM ${TMP} o WHERE o.id_master_pokemon = $1
        RETURNING id_personaje_pokemon`,
       [id_master_pokemon, id_personaje, alCinturon])
     const nuevoId = ins[0].id_personaje_pokemon

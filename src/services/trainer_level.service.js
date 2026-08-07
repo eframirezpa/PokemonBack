@@ -11,6 +11,10 @@
 //  4. Subir de nivel puede otorgar un pokéslot (niveles 5, 10 y 15). Un slot
 //     más hace entrar otro Pokémon en la cuenta, lo que sube pokelvls, lo que
 //     puede desencadenar otro nivel. Por eso se recalcula hasta estabilizar.
+//  5. Un Pokémon RECIBIDO (pokemon_recibido) aporta como máximo el nivel del
+//     entrenador. Recibir uno de nivel 20 siendo nivel 3 no regala niveles, y
+//     su aporte crece según el entrenador sube. El nivel es a la vez entrada y
+//     salida del cálculo, otra razón para iterar hasta que se estabilice.
 //
 // Recalcular es idempotente: si nada cambió, no escribe.
 const { query, SCHEMA } = require('../config/db')
@@ -22,16 +26,30 @@ const TTL  = `"${SCHEMA}"."trainer_levels"`
 
 const NIVEL_MAX = 20
 
-// Suma de los `slots` niveles más altos. Mínimo 1: un entrenador sin Pokémon
+// Suma de los `slots` aportes más altos. Mínimo 1: un entrenador sin Pokémon
 // sigue contando 1, igual que al crear el personaje.
-const pokeLevelsCon = async (id_personaje, slots, run) => {
+//
+// Un Pokémon RECIBIDO (transferido por el máster o por otro entrenador) aporta
+// como máximo el nivel del entrenador: recibir uno de nivel 20 siendo nivel 3
+// no regala niveles, y su aporte va creciendo a medida que el entrenador sube.
+// Los que consiguió por su cuenta aportan su nivel completo; si se les topara
+// también, ningún entrenador podría subir nunca -- su propio Pokémon jamás
+// aportaría más que él y el cálculo se quedaría clavado en el nivel 1.
+//
+// El orden es por APORTE y no por nivel bruto: si un recibido de nivel 10 está
+// topado a 5 y hay uno propio de nivel 7, entra el propio, que es el que más
+// suma. Ordenar por el nivel bruto elegiría el peor de los dos.
+const pokeLevelsCon = async (id_personaje, slots, nivelTrainer, run) => {
   const { rows } = await run(
-    `SELECT COALESCE(SUM(pokemon_level), 0)::int AS total
-       FROM (SELECT pokemon_level FROM ${TPP}
+    `SELECT COALESCE(SUM(aporte), 0)::int AS total
+       FROM (SELECT CASE WHEN pokemon_recibido
+                         THEN LEAST(pokemon_level, $3::int)
+                         ELSE pokemon_level END AS aporte
+               FROM ${TPP}
               WHERE id_personaje = $1
-              ORDER BY pokemon_level DESC
+              ORDER BY aporte DESC
               LIMIT $2::int) mejores`,
-    [id_personaje, Math.max(0, Number(slots) || 0)]
+    [id_personaje, Math.max(0, Number(slots) || 0), Math.max(1, Number(nivelTrainer) || 1)]
   )
   return Math.max(1, Number(rows[0]?.total) || 0)
 }
@@ -77,7 +95,9 @@ const recalcular = async (id_personaje, run = query) => {
   // Converge en pocas vueltas (solo 3 niveles dan slot). El tope es una red
   // de seguridad para que un dato raro no deje el bucle girando.
   for (let vuelta = 0; vuelta < NIVEL_MAX; vuelta++) {
-    pokelvls = await pokeLevelsCon(id_personaje, slots, run)
+    // El nivel entra en el cálculo como tope de los recibidos, así que al subir
+    // hay que rehacer la cuenta: la vuelta siguiente lo recalcula con el nuevo.
+    pokelvls = await pokeLevelsCon(id_personaje, slots, nivel, run)
     const nivelCalculado = await nivelParaTotal(pokelvls, run)
 
     // Regla 3: el nivel nunca baja

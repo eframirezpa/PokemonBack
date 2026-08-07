@@ -750,7 +750,8 @@ const transferPokemonToPersonaje = async (id_personaje, id_personaje_pokemon, id
     await client.query(
       `UPDATE ${TPP}
           SET id_personaje = $1, pokemon_en_equipo = false,
-              personaje_pokemon_is_in_game = false, pokemon_needs_rename = true
+              personaje_pokemon_is_in_game = false, pokemon_needs_rename = true,
+              pokemon_recibido = true
         WHERE id_personaje_pokemon = $2`,
       [id_destino, id_personaje_pokemon])
 
@@ -1657,6 +1658,20 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
         [Number(id_abilitie), id_pp]
       )
     }
+
+    // ── 6. Starter ────────────────────────────────────────────────
+    // El primero que agrega es su starter. La condición NOT ... asegura que
+    // solo se marque una vez: sin ella, el último Pokémon agregado pisaría el
+    // id y la marca dejaría de servir para identificar al inicial.
+    const { rows: st } = await client.query(
+      `UPDATE ${T}
+          SET personaje_get_starter_pokemon = true,
+              personaje_starter_pokemon_id   = $2
+        WHERE id_personaje = $1 AND personaje_get_starter_pokemon = false
+        RETURNING personaje_starter_pokemon_id`,
+      [id_personaje, id_pp]
+    )
+    pp.es_starter = st.length > 0
 
     // Un Pokémon nuevo puede entrar en la cuenta de pokelvls y subir al entrenador
     pp.nivel_entrenador = await recalcularSeguro(id_personaje, (t, p) => client.query(t, p))
