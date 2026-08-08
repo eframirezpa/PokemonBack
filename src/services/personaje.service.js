@@ -2,6 +2,7 @@ const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
 const { recalcularSeguro } = require('./trainer_level.service')
 const { stabExtraDelPersonaje } = require('../lib/stab')
+const { bondExtraDelPersonaje } = require('../lib/bond')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -32,6 +33,7 @@ const TPAP  = `"${SCHEMA}"."personaje_armor_prof"`
 const TFB   = `"${SCHEMA}"."feats_bonus"`
 const TFEATS = `"${SCHEMA}"."feats"`
 const TSPEC = `"${SCHEMA}"."specializations"`
+const TPPB  = `"${SCHEMA}"."personaje_path_bonus"`
 const TPSB  = `"${SCHEMA}"."personaje_specializations_bonus"`
 const TEXP  = `"${SCHEMA}"."pokemon_experience_levels"`
 const TLEVELS = `"${SCHEMA}"."pokemon_levels"`
@@ -409,7 +411,12 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
   // El bono de STAB de la ruta se calcula al leer: depende de las
   // especializaciones, que se ganan en niveles posteriores.
   const extra = await stabExtraDelPersonaje(id_personaje)
-  return rows.map(r => fixMedia({ ...r, pokemon_stab_extra: extra.get(Number(r.id_personaje_pokemon)) || 0 }))
+  const bond  = await bondExtraDelPersonaje(id_personaje)
+  return rows.map(r => fixMedia({
+    ...r,
+    pokemon_stab_extra: extra.get(Number(r.id_personaje_pokemon)) || 0,
+    pokemon_bond_extra: bond.get(Number(r.id_personaje_pokemon))?.extra || 0,
+  }))
 }
 
 // Marca (o desmarca) el Pokémon invocado. Solo uno puede estar en juego a la vez,
@@ -528,9 +535,16 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
   const stabExtra = pp.id_personaje
     ? (await stabExtraDelPersonaje(pp.id_personaje)).get(Number(id_personaje_pokemon)) || 0
     : 0
+  // Vínculo: además del extra viaja el nivel resultante, para poder mostrarlo
+  const bondInfo = pp.id_personaje
+    ? (await bondExtraDelPersonaje(pp.id_personaje)).get(Number(id_personaje_pokemon)) || null
+    : null
 
   return {
-    pokemon_stab_extra: stabExtra, ...fixMedia(pp), pokemon_hp, stats, skills, moves, pasivas, exp_next, feats }
+    pokemon_stab_extra: stabExtra,
+    pokemon_bond_extra: bondInfo?.extra || 0,
+    pokemon_bond_nivel_nuevo: bondInfo?.nivel_nuevo ?? null,
+    ...fixMedia(pp), pokemon_hp, stats, skills, moves, pasivas, exp_next, feats }
 }
 
 // Suma experiencia a un Pokémon del entrenador. Sube máximo 1 nivel y, si sube,
@@ -1043,6 +1057,26 @@ const findFullById = async (id_personaje) => {
   const { rows: pathRows } = await query(
     `SELECT * FROM "${SCHEMA}"."paths" WHERE path_id = $1`, [personaje.personaje_path])
   const pathRow = pathRows[0] || null
+  // Recursos de ruta: el máximo se recalcula de la columna que nombra `value`
+  // (personaje_level, personaje_prof...), así que crece solo al subir de nivel.
+  // En `target` viven los puntos que quedan.
+  const { rows: recursosRows } = await query(
+    `SELECT personaje_path_bonus_id AS id,
+            personaje_path_bonus_llave  AS nombre,
+            personaje_path_bonus_value  AS columna,
+            personaje_path_bonus_target AS actual,
+            personaje_path_bonus_level  AS level
+       FROM "${SCHEMA}"."personaje_path_bonus"
+      WHERE personaje_path_bonus_personaje_id = $1
+        AND lower(personaje_path_bonus_type) = 'resource'
+      ORDER BY personaje_path_bonus_level, personaje_path_bonus_id`, [id_personaje])
+  const recursos = recursosRows.map(r => ({
+    id: Number(r.id), nombre: r.nombre, columna: r.columna,
+    actual: Math.max(0, Number(r.actual) || 0),
+    maximo: Math.max(0, Number(personaje[r.columna]) || 0),
+    level: Number(r.level),
+  }))
+
   const { rows: pathBonosRows } = await query(
     `SELECT personaje_path_bonus_id   AS id,
             personaje_path_bonus_type  AS type,
@@ -1069,6 +1103,7 @@ const findFullById = async (id_personaje) => {
     specializations: specRows,
     path:            pathRow,
     path_bonos:      pathBonosRows,
+    path_recursos:   recursos,
   }
 }
 
@@ -1260,6 +1295,42 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
     if (weaponProfNames.length) await applyWeaponProfs(client, id_personaje, weaponProfNames, pfId)
     return { personaje_feat_id: pfId, bonos: rowsToInsert, armor_profs: armorRows, ...feat }
   })
+}
+
+// Gasta puntos de un recurso de ruta. Como los PP: nunca baja de 0 ni sube del
+// máximo, que se recalcula de la columna del personaje.
+const spendPathResource = async (id_personaje, id_bonus, cantidad) => {
+  const n = Math.max(1, Math.floor(Number(cantidad) || 1))
+  const { rows } = await query(
+    `SELECT personaje_path_bonus_value AS columna, personaje_path_bonus_target AS actual
+       FROM ${TPPB} WHERE personaje_path_bonus_id = $1
+        AND personaje_path_bonus_personaje_id = $2
+        AND lower(personaje_path_bonus_type) = 'resource'`, [id_bonus, id_personaje])
+  if (!rows[0]) return { error: 'notfound' }
+  const actual = Math.max(0, Number(rows[0].actual) || 0)
+  if (actual < n) return { error: 'insufficient', actual }
+  const nuevo = actual - n
+  await query(
+    `UPDATE ${TPPB} SET personaje_path_bonus_target = $1 WHERE personaje_path_bonus_id = $2`,
+    [String(nuevo), id_bonus])
+  return { actual: nuevo }
+}
+
+// Fija el valor actual (el lápiz). El máximo NO se toca: se deriva del personaje.
+const setPathResource = async (id_personaje, id_bonus, actualRaw) => {
+  const { rows } = await query(
+    `SELECT pb.personaje_path_bonus_value AS columna
+       FROM ${TPPB} pb WHERE pb.personaje_path_bonus_id = $1
+        AND pb.personaje_path_bonus_personaje_id = $2
+        AND lower(pb.personaje_path_bonus_type) = 'resource'`, [id_bonus, id_personaje])
+  if (!rows[0]) return { error: 'notfound' }
+  const { rows: pj } = await query(`SELECT * FROM ${T} WHERE id_personaje = $1`, [id_personaje])
+  const maximo = Math.max(0, Number(pj[0]?.[rows[0].columna]) || 0)
+  const actual = Math.min(Math.max(0, Math.floor(Number(actualRaw) || 0)), maximo)
+  await query(
+    `UPDATE ${TPPB} SET personaje_path_bonus_target = $1 WHERE personaje_path_bonus_id = $2`,
+    [String(actual), id_bonus])
+  return { actual, maximo }
 }
 
 // ── Especializaciones del personaje (personaje_specializations_bonus) ──
@@ -1741,6 +1812,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
 }
 
 module.exports = {
+  spendPathResource, setPathResource,
   findByPartidaUser, findParty, findById, findFullById,
   updateCombate, updatePokemonCombate,
   findEquipo, addEquipo, updateEquipoCantidad,

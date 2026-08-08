@@ -136,6 +136,25 @@ const addPokemon = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /personaje/:id/path-resource/:idb  { cantidad } → gasta puntos
+const spendPathResource = async (req, res, next) => {
+  try {
+    const r = await svc.spendPathResource(req.params.id, req.params.idb, req.body.cantidad)
+    if (r.error === 'notfound')     return res.status(404).json({ error: 'Recurso no encontrado' })
+    if (r.error === 'insufficient') return res.status(409).json({ error: 'No quedan puntos suficientes', actual: r.actual })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+// PUT /personaje/:id/path-resource/:idb  { actual } → fija el valor (el lápiz)
+const setPathResource = async (req, res, next) => {
+  try {
+    const r = await svc.setPathResource(req.params.id, req.params.idb, req.body.actual)
+    if (r.error === 'notfound') return res.status(404).json({ error: 'Recurso no encontrado' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
 const getWeapon = async (req, res, next) => {
   try { res.json(await svc.findWeapon(req.params.id)) } catch (e) { next(e) }
 }
@@ -350,6 +369,7 @@ module.exports = {
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
+  spendPathResource, setPathResource,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
   renamePokemon, releasePokemon, transferPokemon, pendingRenames, spendMovePP, setMovePP,
   getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,

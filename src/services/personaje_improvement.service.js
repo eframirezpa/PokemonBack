@@ -21,6 +21,7 @@
 //                               elegida para el nivel que se confirma
 const { query, transaction, SCHEMA } = require('../config/db')
 const { previewStab } = require('../lib/stab')
+const { previewBond } = require('../lib/bond')
 
 const T     = `"${SCHEMA}"."personaje"`
 const TS    = `"${SCHEMA}"."personaje_stats"`
@@ -96,6 +97,7 @@ const listPending = async (id_personaje) => {
 
   // Qué Pokémon ganarían STAB, para la ventana del rasgo stab_bonus
   const stabPreview = await previewStab(id_personaje)
+  const bondPreview = await previewBond(id_personaje)
 
   let bonosPorNivel = new Map()
   let rasgoPorNivel = new Map()
@@ -134,6 +136,7 @@ const listPending = async (id_personaje) => {
       // pedir una elección, anunciar una skill fija, o solo mostrarlo
       path_bonos: (bonosPorNivel.get(n) ?? []).map(b => ({ ...b, regla: clasificarBono(b) })),
       stab_preview: stabPreview,
+      bond_preview: bondPreview,
       hit_dice: hitDice,
       hit_dice_max: hitDiceMax(hitDice),
     }
@@ -152,6 +155,26 @@ const clasificarBono = (b) => {
   const tipo   = norm(b.path_bonus_type)
   const llave  = norm(b.path_bonus_key)
   const target = norm(b.path_bonus_target)
+  // Especialización extra: se reconoce por la LLAVE. En el catálogo el tipo es
+  // 'extra_specialization', pero la llave es lo que la identifica sin depender
+  // de que ese tipo se escriba siempre igual.
+  if (llave === 'specialization') {
+    return { modo: 'spec_extra', cuantas: Math.max(1, Math.floor(Number(b.path_bonus_value) || 1)), target }
+  }
+
+  // Recurso del entrenador: puntos gastables. path_bonus_uses_formula nombra la
+  // COLUMNA de personaje de la que sale el máximo (personaje_level, prof...).
+  // Si viene vacía, la fórmula está en prosa y queda fuera por ahora.
+  if (tipo === 'resource' && target === 'trainer') {
+    const col = (b.path_bonus_uses_formula || '').trim()
+    if (!col) return null
+    return { modo: 'resource', nombre: (b.path_bonus_resource_name || '').trim() || llave, columna: col, target }
+  }
+
+  // Vínculo: se reconoce por el TARGET, no por el tipo. En el catálogo la fila
+  // de Commander es type 'resource', así que mirar solo el tipo la dejaría como
+  // narrativa.
+  if (target === 'positive_bond_pokemon') return { modo: 'bond', valor: '1', target: 'all_pokemon' }
   // STAB: no pide elección. Se persiste una marca y el bono real se calcula al
   // leer, porque depende de las especializaciones, que llegan en niveles 7 y 18.
   if (tipo === 'stab_bonus') return { modo: 'stab', valor: '1', target: 'all_pokemon' }
@@ -164,6 +187,21 @@ const clasificarBono = (b) => {
   }
   if (!llave) return null
   return { modo: 'fija', valor, llave, target }
+}
+
+// Lee de personaje la columna que nombra el bono de recurso. Devuelve null si
+// esa columna no existe, para no interpolar en el SQL algo que no se validó.
+const _columnasPersonaje = new Set()
+const valorDeColumna = async (id_personaje, columna, run = query) => {
+  if (!_columnasPersonaje.size) {
+    const { rows } = await run(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'personaje'`, [SCHEMA])
+    for (const r of rows) _columnasPersonaje.add(r.column_name)
+  }
+  if (!_columnasPersonaje.has(columna)) return null
+  const { rows } = await run(`SELECT "${columna}" AS v FROM ${T} WHERE id_personaje = $1`, [id_personaje])
+  return Math.max(0, Number(rows[0]?.v) || 0)
 }
 
 // Los bonos de un nivel que exigen elección del jugador
@@ -211,6 +249,38 @@ const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas
   for (const b of rows) {
     const c = clasificarBono(b)
     if (!c) continue                       // narrativa: no se persiste
+    if (c.modo === 'resource') {
+      // value guarda el NOMBRE de la columna y target los puntos que quedan.
+      // El máximo no se guarda: se lee de esa columna, así crece solo cuando
+      // sube el nivel o la proficiencia sin dejar un número obsoleto.
+      // La columna viene del catálogo, no de un formulario, pero igual se
+      // valida contra el esquema: es lo único que se interpola en el SQL.
+      const maximo = await valorDeColumna(id_personaje, c.columna, run)
+      if (maximo == null) continue   // columna desconocida: se ignora el bono
+      await run(
+        `INSERT INTO ${TPPB} (
+           personaje_path_bonus_personaje_id, personaje_path_bonus_type,
+           personaje_path_bonus_llave, personaje_path_bonus_value,
+           personaje_path_bonus_target, personaje_path_bonus_level
+         ) VALUES ($1, 'resource', $2, $3, $4, $5)`,
+        [id_personaje, c.nombre, c.columna, String(maximo), nivel])
+      n++
+      continue
+    }
+    if (c.modo === 'spec_extra') continue   // se persiste aparte, con la elección
+    if (c.modo === 'bond') {
+      // Igual que el de STAB: una marca. A quién alcanza y cuánto se resuelve
+      // en lib/bond.js al leer, porque depende del starter y del vínculo actual.
+      await run(
+        `INSERT INTO ${TPPB} (
+           personaje_path_bonus_personaje_id, personaje_path_bonus_type,
+           personaje_path_bonus_llave, personaje_path_bonus_value,
+           personaje_path_bonus_target, personaje_path_bonus_level
+         ) VALUES ($1, 'bond_bonus', 'bond_bonus', '1', 'all_pokemon', $2)`,
+        [id_personaje, nivel])
+      n++
+      continue
+    }
     if (c.modo === 'stab') {
       // Fila fija: la llave y el valor no varían, lo que cambia es a cuántos
       // Pokémon alcanza, y eso se resuelve en lib/stab.js al leer.
@@ -352,6 +422,23 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
     }
   }
 
+  // Especialización extra que da un bono de ruta. Va en su propia clave para no
+  // chocar con la feature 'Specialization' del nivel, que puede coincidir.
+  let specPath = null
+  if (path_id != null && (eligePath || rasgoDePath)) {
+    const { rows: bs } = await query(
+      `SELECT * FROM ${TPB} WHERE path_id = $1 AND path_bonus_level = $2`, [path_id, Number(pend.lvl)])
+    if (bs.some(b => clasificarBono(b)?.modo === 'spec_extra')) {
+      const idsp = Number(choices.path_specialization_id)
+      if (!idsp) return { error: 'pathspec' }
+      const disp = await specsDisponibles(id_personaje)
+      specPath = disp.find(x => Number(x.specialization_id) === idsp)
+      // Si ya la tiene no otorgaría nada y se perdería la mejora
+      if (!specPath) return { error: 'pathspec' }
+      if (spec && Number(spec.specialization_id) === idsp) return { error: 'pathspec' }
+    }
+  }
+
   let saving = null
   if (necesitaSav) {
     saving = norm(choices.saving)
@@ -384,15 +471,16 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
       }
     }
 
-    if (spec) {
-      // Mismos bonos que la pestaña de especializaciones del lápiz
+    // Las dos vías -la feature del nivel y el bono de ruta- generan las mismas
+    // filas, así que comparten el mismo bloque.
+    for (const sp of [spec, specPath].filter(Boolean)) {
       const bonos = []
-      if (spec.specialization_ability_score_increase) {
-        bonos.push({ type: 'stat', llave: spec.specialization_ability_score_increase,
-                     value: String(spec.specialization_ability_score_increase_value ?? 1) })
+      if (sp.specialization_ability_score_increase) {
+        bonos.push({ type: 'stat', llave: sp.specialization_ability_score_increase,
+                     value: String(sp.specialization_ability_score_increase_value ?? 1) })
       }
-      if (spec.specialization_skill_proficiency) {
-        bonos.push({ type: 'skill', llave: spec.specialization_skill_proficiency, value: 'exp' })
+      if (sp.specialization_skill_proficiency) {
+        bonos.push({ type: 'skill', llave: sp.specialization_skill_proficiency, value: 'exp' })
       }
       for (const b of bonos) {
         await client.query(
@@ -400,7 +488,7 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
              (id_personaje, id_specializations, tipo_personaje_specializations_bonus,
               llave_personaje_specializations_bonus, valor_personaje_specializations_bonus)
            VALUES ($1, $2, $3, $4, $5)`,
-          [id_personaje, spec.specialization_id, b.type, b.llave, b.value])
+          [id_personaje, sp.specialization_id, b.type, b.llave, b.value])
       }
     }
 
@@ -426,7 +514,8 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
         WHERE personaje_pending_improvement_id = $1`, [pend.id])
 
     return { ok: true, lvl: Number(pend.lvl), hp_roll: roll, asi, saving,
-             specialization: spec?.specialization_name ?? null, path_id, bonos_otorgados }
+             specialization: spec?.specialization_name ?? null,
+             path_specialization: specPath?.specialization_name ?? null, path_id, bonos_otorgados }
   })
 }
 

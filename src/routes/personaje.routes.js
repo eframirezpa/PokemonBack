@@ -31,6 +31,10 @@ router.get('/:id/pokemon/pending-rename', authenticate, ctrl.pendingRenames)
 router.get('/:id/pokemon',         authenticate, ctrl.getPokemon)
 router.post('/:id/pokemon',        authenticate, ctrl.addPokemon)
 
+// Recursos que otorga la ruta (puntos gastables, tipo PP)
+router.patch('/:id/path-resource/:idb', authenticate, ctrl.spendPathResource)
+router.put('/:id/path-resource/:idb',   authenticate, ctrl.setPathResource)
+
 // Mejoras de nivel del entrenador
 router.get('/:id/improvements',                        authenticate, mejoras.getPending)
 router.get('/:id/improvements/specializations',        authenticate, mejoras.getSpecs)

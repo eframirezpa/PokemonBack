@@ -22,6 +22,7 @@ const confirm = async (req, res, next) => {
     if (r.error === 'saving')         return res.status(400).json({ error: 'Elige una salvación en la que no seas proficiente' })
     if (r.error === 'path')           return res.status(400).json({ error: 'Elige una ruta válida' })
     if (r.error === 'sinpath')        return res.status(409).json({ error: 'Primero debes elegir tu ruta (nivel 2)' })
+    if (r.error === 'pathspec')       return res.status(400).json({ error: 'Elige una especialización que no tengas para el rasgo de ruta' })
     if (r.error === 'pathskills')     return res.status(400).json({ error: `Debes elegir exactamente ${r.cuantas} habilidad(es) para el rasgo de ruta` })
     res.json(r)
   } catch (e) { next(e) }
