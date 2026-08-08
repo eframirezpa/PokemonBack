@@ -161,7 +161,15 @@ const recalcular = async (id_personaje, run = query) => {
               personaje_level      = $3,
               personaje_pokeslots  = $4,
               personaje_prof       = $5,
-              personaje_sr         = $6
+              personaje_sr         = $6,
+              -- Un dado más por cada nivel ganado, sin pasar del total; la
+              -- reserva queda siempre en el nivel. La resta usa el
+              -- personaje_level viejo, así que cubre los saltos de varios
+              -- niveles de una vez, que aquí sí ocurren: pokelvls avanza a
+              -- tirones y puede cruzar dos umbrales en el mismo evento.
+              personaje_hit_dice_left = LEAST(
+                COALESCE(personaje_hit_dice_left, 0) + GREATEST($3 - personaje_level, 0), $3),
+              hit_dice_pool = $3
         WHERE id_personaje = $1`,
       [id_personaje, pokelvls, nivel, slots, prof, sr]
     )

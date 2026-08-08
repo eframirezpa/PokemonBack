@@ -591,6 +591,13 @@ const addPokemonExperience = async (id_personaje_pokemon, amountRaw) => {
       `UPDATE ${TPP}
           SET pokemon_experiencia = $1,
               pokemon_level       = $2,
+              -- Un dado más por cada nivel ganado, sin pasar del total; la
+              -- reserva queda siempre en el nivel. Las expresiones leen el
+              -- pokemon_level viejo, así que la resta da los niveles subidos.
+              -- Si no sube, la resta es 0 y solo se recuadra la reserva.
+              pokemon_hit_dice_left = LEAST(
+                COALESCE(pokemon_hit_dice_left, 0) + GREATEST($2 - pokemon_level, 0), $2),
+              hit_dice_pool = $2,
               pokemon_proficient     = COALESCE(
                 (SELECT pokemon_level_proficiency_bonus FROM ${TLEVELS} WHERE pokemon_level = $2),
                 pokemon_proficient),
@@ -1346,6 +1353,57 @@ const setPathResource = async (id_personaje, id_bonus, actualRaw) => {
   return { actual, maximo }
 }
 
+// ── Dados de golpe disponibles (hit_dice_left sobre hit_dice_pool) ──────────
+// Se comportan igual que los Extra Points de la ruta: gastar nunca baja de 0 y
+// el lápiz nunca sube del total. hit_dice_pool NO se edita aquí; su única
+// fuente es la subida de nivel, que lo deja siempre en el nivel actual.
+//
+// Entrenador y Pokémon comparten el mecanismo y cambian solo en la tabla, la
+// columna y el filtro. El del Pokémon lleva además el dueño, para que nadie
+// gaste los dados de un Pokémon ajeno.
+const DADOS = {
+  trainer: { tabla: T,   col: 'personaje_hit_dice_left', filtro: 'id_personaje = $1' },
+  pokemon: { tabla: TPP, col: 'pokemon_hit_dice_left',   filtro: 'id_personaje_pokemon = $1 AND id_personaje = $2' },
+}
+
+const leerDados = async (quien, params) => {
+  const d = DADOS[quien]
+  const { rows } = await query(
+    `SELECT COALESCE(${d.col}, 0) AS actual, COALESCE(hit_dice_pool, 0) AS maximo
+       FROM ${d.tabla} WHERE ${d.filtro}`, params)
+  return rows[0] ? { actual: Number(rows[0].actual), maximo: Number(rows[0].maximo) } : null
+}
+
+const escribirDados = (quien, params, valor) => {
+  const d = DADOS[quien]
+  return query(
+    `UPDATE ${d.tabla} SET ${d.col} = $${params.length + 1} WHERE ${d.filtro}`,
+    [...params, valor])
+}
+
+const gastarDados = async (quien, params, cantidad) => {
+  const n = Math.max(1, Math.floor(Number(cantidad) || 1))
+  const cur = await leerDados(quien, params)
+  if (!cur) return { error: 'notfound' }
+  if (cur.actual < n) return { error: 'insufficient', actual: cur.actual, maximo: cur.maximo }
+  const actual = cur.actual - n
+  await escribirDados(quien, params, actual)
+  return { actual, maximo: cur.maximo }
+}
+
+const fijarDados = async (quien, params, actualRaw) => {
+  const cur = await leerDados(quien, params)
+  if (!cur) return { error: 'notfound' }
+  const actual = Math.min(Math.max(0, Math.floor(Number(actualRaw) || 0)), cur.maximo)
+  await escribirDados(quien, params, actual)
+  return { actual, maximo: cur.maximo }
+}
+
+const spendHitDice       = (id_personaje, cantidad)       => gastarDados('trainer', [id_personaje], cantidad)
+const setHitDice         = (id_personaje, actual)         => fijarDados('trainer', [id_personaje], actual)
+const spendHitDicePokemon = (id_personaje, idpp, cantidad) => gastarDados('pokemon', [idpp, id_personaje], cantidad)
+const setHitDicePokemon   = (id_personaje, idpp, actual)   => fijarDados('pokemon', [idpp, id_personaje], actual)
+
 // Edita a mano los puntos de vínculo de un Pokémon. Tras persistir, deja
 // personaje_pokemon_bond en el nivel que corresponda.
 const updateBondPoints = (id_personaje, id_personaje_pokemon, puntos) =>
@@ -1841,6 +1899,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
 module.exports = {
   updateBondPoints,
   spendPathResource, setPathResource,
+  spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   findByPartidaUser, findParty, findById, findFullById,
   updateCombate, updatePokemonCombate,
   findEquipo, addEquipo, updateEquipoCantidad,

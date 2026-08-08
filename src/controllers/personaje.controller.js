@@ -155,6 +155,39 @@ const setPathResource = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// ── Dados de golpe ──────────────────────────────────────────────────────────
+// Mismas respuestas que los recursos de ruta: 404 si no existe, 409 si no
+// quedan dados. El 409 devuelve el valor real para que la UI se reconcilie.
+const responderDados = (res, r) => {
+  if (r.error === 'notfound')     return res.status(404).json({ error: 'No encontrado' })
+  if (r.error === 'insufficient') return res.status(409).json({ error: 'No quedan dados de golpe', actual: r.actual, maximo: r.maximo })
+  res.json(r)
+}
+
+// PATCH /personaje/:id/hit-dice  { cantidad } → gasta dados del entrenador
+const spendHitDice = async (req, res, next) => {
+  try { responderDados(res, await svc.spendHitDice(req.params.id, req.body.cantidad)) }
+  catch (e) { next(e) }
+}
+
+// PUT /personaje/:id/hit-dice  { actual } → fija los dados del entrenador
+const setHitDice = async (req, res, next) => {
+  try { responderDados(res, await svc.setHitDice(req.params.id, req.body.actual)) }
+  catch (e) { next(e) }
+}
+
+// PATCH /personaje/:id/pokemon/:idpp/hit-dice  { cantidad } → gasta dados del Pokémon
+const spendHitDicePokemon = async (req, res, next) => {
+  try { responderDados(res, await svc.spendHitDicePokemon(req.params.id, req.params.idpp, req.body.cantidad)) }
+  catch (e) { next(e) }
+}
+
+// PUT /personaje/:id/pokemon/:idpp/hit-dice  { actual } → fija los dados del Pokémon
+const setHitDicePokemon = async (req, res, next) => {
+  try { responderDados(res, await svc.setHitDicePokemon(req.params.id, req.params.idpp, req.body.actual)) }
+  catch (e) { next(e) }
+}
+
 // PUT /personaje/:id/pokemon/:idpp/bond  { puntos } → edita el vínculo a mano
 const updateBondPoints = async (req, res, next) => {
   try {
@@ -379,6 +412,7 @@ module.exports = {
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
   spendPathResource, setPathResource, updateBondPoints,
+  spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
   renamePokemon, releasePokemon, transferPokemon, pendingRenames, spendMovePP, setMovePP,
   getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,

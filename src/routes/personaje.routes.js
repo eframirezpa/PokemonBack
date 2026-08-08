@@ -3,6 +3,7 @@ const ctrl   = require('../controllers/personaje.controller')
 const mejoras = require('../controllers/personaje_improvement.controller')
 const pkFeatCtrl = require('../controllers/personaje_pokemon_feat.controller')
 const improveCtrl = require('../controllers/personaje_pokemon_improvement.controller')
+const descanso = require('../controllers/descanso.controller')
 const { authenticate } = require('../middleware/auth.middleware')
 
 router.get('/',                    authenticate, ctrl.getMine)
@@ -36,6 +37,17 @@ router.put('/:id/pokemon/:idpp/bond', authenticate, ctrl.updateBondPoints)
 // Recursos que otorga la ruta (puntos gastables, tipo PP)
 router.patch('/:id/path-resource/:idb', authenticate, ctrl.spendPathResource)
 router.put('/:id/path-resource/:idb',   authenticate, ctrl.setPathResource)
+
+// Dados de golpe gastables (hit_dice_left sobre hit_dice_pool), tipo PP
+router.patch('/:id/hit-dice',                authenticate, ctrl.spendHitDice)
+router.put('/:id/hit-dice',                  authenticate, ctrl.setHitDice)
+router.patch('/:id/pokemon/:idpp/hit-dice',  authenticate, ctrl.spendHitDicePokemon)
+router.put('/:id/pokemon/:idpp/hit-dice',    authenticate, ctrl.setHitDicePokemon)
+
+// Descansos: quiénes pueden tomarlo y su aplicación
+router.get('/:id/rest',        authenticate, descanso.getParticipantes)
+router.post('/:id/rest/long',  authenticate, descanso.longRest)
+router.post('/:id/rest/short', authenticate, descanso.shortRest)
 
 // Mejoras de nivel del entrenador
 router.get('/:id/improvements',                        authenticate, mejoras.getPending)

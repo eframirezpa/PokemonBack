@@ -22,6 +22,7 @@
 const { query, transaction, SCHEMA } = require('../config/db')
 const { previewStab } = require('../lib/stab')
 const { previewBond, aplicarBonoBond, sincronizarBondSeguro } = require('../lib/bond')
+const { hitDiceMax } = require('../lib/hitdice')
 
 const T     = `"${SCHEMA}"."personaje"`
 const TS    = `"${SCHEMA}"."personaje_stats"`
@@ -38,16 +39,6 @@ const ASI_PUNTOS = 2
 const STAT_CAP = 20
 
 const norm = s => (s ?? '').toLowerCase().trim()
-// "1d6" → 6. Mismo parser que usa el front para los Pokémon.
-// Sin dado legible se cae al d6, que es con el que el creador de personajes los
-// da de alta. Nunca a "sin tope": con 0 la validación aceptaría cualquier
-// número, y hay personajes viejos con personaje_hit_dice en NULL.
-const DADO_POR_DEFECTO = 6
-const hitDiceMax = s => {
-  const m = /d\s*(\d+)/i.exec(s || '')
-  const n = m ? Number(m[1]) : 0
-  return n > 0 ? n : DADO_POR_DEFECTO
-}
 const splitFeatures = s => (s || '').split(',').map(x => x.trim()).filter(Boolean)
 const tiene = (features, nombre) => splitFeatures(features).some(f => norm(f) === norm(nombre))
 
