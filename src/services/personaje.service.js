@@ -2,7 +2,7 @@ const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
 const { recalcularSeguro } = require('./trainer_level.service')
 const { stabExtraDelPersonaje } = require('../lib/stab')
-const { bondExtraDelPersonaje } = require('../lib/bond')
+const { bondExtraDelPersonaje, sincronizarBondSeguro, setBondPoints } = require('../lib/bond')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -399,7 +399,7 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
   const { rows } = await query(
     `SELECT pp.id_personaje_pokemon, pp.id_pokemon, pp.pokemon_apodo, pp.pokemon_level,
             pp.pokemon_experiencia, pp.pokemon_en_equipo, pp.pokemon_is_shiny, pp.personaje_pokemon_is_in_game,
-            pp.pokemon_tag,
+            pp.pokemon_tag, pp.personaje_pokemon_bond_points,
             pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny,
             pk.pokemon_media_main, pk.pokemon_media_main_shiny
      FROM ${TPP} pp
@@ -633,6 +633,8 @@ const addPokemonExperience = async (id_personaje_pokemon, amountRaw) => {
     // Si el Pokémon subió, sus niveles cuentan para el entrenador
     let nivel_entrenador = null
     if (leveled_up) {
+      // Revalida su vínculo contra bonds por si los puntos cambiaron
+      await sincronizarBondSeguro({ id_personaje_pokemon }, (t, p) => client.query(t, p))
       const { rows: dueño } = await client.query(
         `SELECT id_personaje FROM ${TPP} WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
       if (dueño[0]?.id_personaje != null) {
@@ -1057,6 +1059,17 @@ const findFullById = async (id_personaje) => {
   const { rows: pathRows } = await query(
     `SELECT * FROM "${SCHEMA}"."paths" WHERE path_id = $1`, [personaje.personaje_path])
   const pathRow = pathRows[0] || null
+  // Bonos del CATÁLOGO de esa ruta: los muestra la sección Clase bajo cada
+  // rasgo. Son la definición, distinta de personaje_path_bonus, que guarda lo
+  // que el personaje ya recibió.
+  if (pathRow) {
+    const { rows: cat } = await query(
+      `SELECT path_bonus_id AS id, path_bonus_level AS level,
+              path_bonus_key AS key, path_bonus_value AS value
+         FROM "${SCHEMA}"."path_bonus"
+        WHERE path_id = $1 ORDER BY path_bonus_level, path_bonus_id`, [pathRow.path_id])
+    pathRow.bonos_catalogo = cat
+  }
   // Recursos de ruta: el máximo se recalcula de la columna que nombra `value`
   // (personaje_level, personaje_prof...), así que crece solo al subir de nivel.
   // En `target` viven los puntos que quedan.
@@ -1332,6 +1345,11 @@ const setPathResource = async (id_personaje, id_bonus, actualRaw) => {
     [String(actual), id_bonus])
   return { actual, maximo }
 }
+
+// Edita a mano los puntos de vínculo de un Pokémon. Tras persistir, deja
+// personaje_pokemon_bond en el nivel que corresponda.
+const updateBondPoints = (id_personaje, id_personaje_pokemon, puntos) =>
+  setBondPoints(id_personaje, id_personaje_pokemon, puntos)
 
 // ── Especializaciones del personaje (personaje_specializations_bonus) ──
 // Agrega una especialización copiando sus bonos resueltos. No permite repetir la misma.
@@ -1812,6 +1830,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
 }
 
 module.exports = {
+  updateBondPoints,
   spendPathResource, setPathResource,
   findByPartidaUser, findParty, findById, findFullById,
   updateCombate, updatePokemonCombate,

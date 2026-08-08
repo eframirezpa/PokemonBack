@@ -155,6 +155,15 @@ const setPathResource = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PUT /personaje/:id/pokemon/:idpp/bond  { puntos } → edita el vínculo a mano
+const updateBondPoints = async (req, res, next) => {
+  try {
+    const r = await svc.updateBondPoints(req.params.id, req.params.idpp, req.body.puntos)
+    if (r.error === 'notfound') return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
 const getWeapon = async (req, res, next) => {
   try { res.json(await svc.findWeapon(req.params.id)) } catch (e) { next(e) }
 }
@@ -369,7 +378,7 @@ module.exports = {
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
-  spendPathResource, setPathResource,
+  spendPathResource, setPathResource, updateBondPoints,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
   renamePokemon, releasePokemon, transferPokemon, pendingRenames, spendMovePP, setMovePP,
   getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,

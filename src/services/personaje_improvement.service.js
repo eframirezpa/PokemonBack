@@ -21,7 +21,7 @@
 //                               elegida para el nivel que se confirma
 const { query, transaction, SCHEMA } = require('../config/db')
 const { previewStab } = require('../lib/stab')
-const { previewBond } = require('../lib/bond')
+const { previewBond, aplicarBonoBond, sincronizarBondSeguro } = require('../lib/bond')
 
 const T     = `"${SCHEMA}"."personaje"`
 const TS    = `"${SCHEMA}"."personaje_stats"`
@@ -177,6 +177,10 @@ const clasificarBono = (b) => {
   if (target === 'positive_bond_pokemon') return { modo: 'bond', valor: '1', target: 'all_pokemon' }
   // STAB: no pide elección. Se persiste una marca y el bono real se calcula al
   // leer, porque depende de las especializaciones, que llegan en niveles 7 y 18.
+  // Tope de SR: suma permanente al máximo que da trainer_levels
+  if (tipo === 'max_sr_bonus' && target === 'trainer') {
+    return { modo: 'max_sr', valor: String(Math.max(1, Math.abs(parseInt(b.path_bonus_value, 10) || 1))), target }
+  }
   if (tipo === 'stab_bonus') return { modo: 'stab', valor: '1', target: 'all_pokemon' }
   if (tipo !== 'skill_proficiency' && tipo !== 'skill_expertise') return null
   const valor = tipo === 'skill_expertise' ? 'expert' : 'prof'
@@ -268,6 +272,22 @@ const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas
       continue
     }
     if (c.modo === 'spec_extra') continue   // se persiste aparte, con la elección
+    if (c.modo === 'max_sr') {
+      // Se persiste como marca y además se suma ya al SR actual, para que el
+      // punto se note sin esperar a la siguiente subida de nivel.
+      await run(
+        `INSERT INTO ${TPPB} (
+           personaje_path_bonus_personaje_id, personaje_path_bonus_type,
+           personaje_path_bonus_llave, personaje_path_bonus_value,
+           personaje_path_bonus_target, personaje_path_bonus_level
+         ) VALUES ($1, 'max_sr_bonus', 'max_sr', $2, 'trainer', $3)`,
+        [id_personaje, c.valor, nivel])
+      await run(
+        `UPDATE ${T} SET personaje_sr = COALESCE(personaje_sr, 0) + $2 WHERE id_personaje = $1`,
+        [id_personaje, Number(c.valor) || 1])
+      n++
+      continue
+    }
     if (c.modo === 'bond') {
       // Igual que el de STAB: una marca. A quién alcanza y cuánto se resuelve
       // en lib/bond.js al leer, porque depende del starter y del vínculo actual.
@@ -278,6 +298,8 @@ const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas
            personaje_path_bonus_target, personaje_path_bonus_level
          ) VALUES ($1, 'bond_bonus', 'bond_bonus', '1', 'all_pokemon', $2)`,
         [id_personaje, nivel])
+      // Suma ya los puntos a los Pokémon que cumplen y deja el nivel al día
+      await aplicarBonoBond(id_personaje, run)
       n++
       continue
     }
@@ -512,6 +534,10 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
     await client.query(
       `UPDATE ${TPI} SET personaje_pending_improvement_applied = true
         WHERE personaje_pending_improvement_id = $1`, [pend.id])
+
+    // El nivel del entrenador puede haber movido los puntos: se revalida el
+    // vínculo de todos sus Pokémon contra la tabla bonds.
+    await sincronizarBondSeguro({ id_personaje }, (t, p) => client.query(t, p))
 
     return { ok: true, lvl: Number(pend.lvl), hp_roll: roll, asi, saving,
              specialization: spec?.specialization_name ?? null,

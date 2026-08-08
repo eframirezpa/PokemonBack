@@ -25,6 +25,7 @@ const TPP  = `"${SCHEMA}"."personaje_pokemon"`
 const TREQ = `"${SCHEMA}"."trainer_pokemon_level_requirements"`
 const TTL  = `"${SCHEMA}"."trainer_levels"`
 const TPI  = `"${SCHEMA}"."personaje_pending_improvement"`
+const TPI_PB = `"${SCHEMA}"."personaje_path_bonus"`
 
 const NIVEL_MAX = 20
 
@@ -137,8 +138,18 @@ const recalcular = async (id_personaje, run = query) => {
   // se lo devolvería entero. Se sube al tope del nivel nuevo, y nunca se baja
   // por si el máster concedió alguno de más.
   const subio = nivel > nivelPrevio
+  // El tope incluye los bonos permanentes de la ruta (max_sr_bonus). Sin esto,
+  // la siguiente subida pisaría el punto ganado al fijar el máximo del nivel.
+  let bonoSr = 0
+  if (subio) {
+    const { rows: bs } = await run(
+      `SELECT COALESCE(SUM(NULLIF(regexp_replace(personaje_path_bonus_value, '[^0-9-]', '', 'g'), '')::int), 0) AS extra
+         FROM ${TPI_PB} WHERE personaje_path_bonus_personaje_id = $1
+          AND lower(personaje_path_bonus_type) = 'max_sr_bonus'`, [id_personaje])
+    bonoSr = Number(bs[0]?.extra) || 0
+  }
   const sr = subio
-    ? Math.max(srPrevio, Number(fila?.trainer_level_max_sr) || srPrevio)
+    ? Math.max(srPrevio, (Number(fila?.trainer_level_max_sr) || 0) + bonoSr || srPrevio)
     : srPrevio
 
   const cambio = pokelvls !== pokelvlsPrevio || nivel !== nivelPrevio
