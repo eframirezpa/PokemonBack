@@ -1512,6 +1512,10 @@ const create = async (id_partida, user_id, data) => {
   const conTotal = (Number(data.stats_base?.personaje_con) || 0) + (Number(data.stats_bonus?.personaje_con) || 0)
   const hpInicial = hp + Math.floor((conTotal - 10) / 2)
 
+  // Los dados de golpe van al nivel: hit_dice_pool es el total que le
+  // corresponde y hit_dice_left nace completo, sin ninguno gastado.
+  const nivel = Number(data.personaje_level) || 1
+
   return transaction(async (client) => {
     // ── 1. personaje ──────────────────────────────────────────────
     const { rows: pRows } = await client.query(
@@ -1522,15 +1526,15 @@ const create = async (id_partida, user_id, data) => {
          personaje_pokelvls, personaje_ideales, personaje_falencias, personaje_conexiones,
          personaje_speed, personaje_hit_dice_left,
          personaje_exahust_lvl, personaje_dsts, personaje_dstf, personaje_pokeslots,
-         personaje_sr
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+         personaje_sr, hit_dice_pool
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
        RETURNING *`,
       [
         data.nombre_personaje ?? null,
         idUP,
         data.personaje_origin ?? null,
         data.personaje_background ?? null,
-        data.personaje_level ?? 1,
+        nivel,
         data.personaje_hit_dice ?? null,
         hp,          // personaje_hp: solo la base
         hpInicial,   // personaje_current_hp: el máximo efectivo, para nacer a tope
@@ -1543,10 +1547,11 @@ const create = async (id_partida, user_id, data) => {
         data.falencias ?? null,
         data.conexiones ?? null,
         30, // personaje_speed inicial (ft)
-        '1/1', // personaje_hit_dice_left inicial
+        nivel, // personaje_hit_dice_left: nace con todos los dados disponibles
         0, 0, 0, // personaje_exahust_lvl, personaje_dsts, personaje_dstf
         3, // personaje_pokeslots: ranuras de Pokémon iniciales
         SR_INICIAL, // personaje_sr: el tope del nivel 1 en trainer_levels
+        nivel, // hit_dice_pool: el total de dados que da el nivel
       ]
     )
     const personaje = pRows[0]
@@ -1717,6 +1722,9 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
   const hp = Number(pk.pokemon_hit_points) || 0
   const hitDice = `1${pk.pokemon_hit_dice || ''}`               // ej. "1d6"
   const bond = id_bond ? Number(id_bond) : null                 // 0/undefined → null (FK)
+  // Un Pokémon del entrenador siempre nace a nivel 1, y sus dados de golpe van
+  // atados a ese nivel: la reserva es el total y ninguno llega gastado.
+  const nivel = 1
   const splitLower = s => (s || '').split(',').map(norm).filter(Boolean)
   const savingSet = new Set(splitLower(pk.pokemon_saving_throws))
 
@@ -1736,13 +1744,13 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
          pokemon_sense_1_name, pokemon_sense_1_value,
          pokemon_sense_2_name, pokemon_sense_2_value,
          personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf,
-         personaje_pokemon_type_1, personaje_pokemon_type_2
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
+         personaje_pokemon_type_1, personaje_pokemon_type_2, hit_dice_pool
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)
        RETURNING *`,
       [
         id_personaje, id_pokemon, apodo ?? pk.pokemon_name, hp, hp,
-        true, PROF_INICIAL, 3, 1,
-        hitDice, pk.pokemon_saving_throws ?? null, '1/1',
+        true, PROF_INICIAL, 3, nivel,
+        hitDice, pk.pokemon_saving_throws ?? null, nivel,
         pk.pokemon_armor_class != null ? Number(pk.pokemon_armor_class) : null,
         id_nat, PROF_INICIAL, bond, // el STAB siempre vale lo mismo que la proficiencia
         pk.pokemon_speed_1_name ?? null, pk.pokemon_speed_1_value ?? null,
@@ -1754,6 +1762,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
         pk.pokemon_sense_2_name ?? null, pk.pokemon_sense_2_value ?? null,
         0, 0, 0, // personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf
         type1Id, type2Id,
+        nivel, // hit_dice_pool: el total de dados que da el nivel
       ]
     )
     const pp = ppRows[0]

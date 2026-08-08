@@ -362,13 +362,15 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
          pokemon_sense_2_name, pokemon_sense_2_value,
          personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf,
          personaje_pokemon_type_1, personaje_pokemon_type_2, pokemon_experiencia,
-         pokemon_tag
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)
+         pokemon_tag, hit_dice_pool
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
        RETURNING *`,
       [
         id_master, id_pokemon, apodo ?? pk.pokemon_name, hp, hp,
         true, proficiency, 3, level,
-        hitDice, pk.pokemon_saving_throws ?? null, '1/1',
+        // Los dados de golpe siguen al nivel con que se invoca: la reserva es el
+        // total y ninguno llega gastado.
+        hitDice, pk.pokemon_saving_throws ?? null, level,
         pk.pokemon_armor_class != null ? Number(pk.pokemon_armor_class) : null,
         id_nat, proficiency, bond, // el STAB siempre vale lo mismo que la proficiencia
         pk.pokemon_speed_1_name ?? null, pk.pokemon_speed_1_value ?? null,
@@ -382,6 +384,7 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
         type1Id, type2Id, experiencia,
         // Etiqueta editable por el máster; en blanco cae al DEFAULT de la tabla
         (pokemon_tag ?? '').toString().trim() || await tagPorDefecto(),
+        level, // hit_dice_pool: el total de dados que da el nivel
       ]
     )
     const mp = mpRows[0]
@@ -600,6 +603,8 @@ const TRANSFER_COLS = [
   // La etiqueta viaja con el Pokémon: uno entregado por el máster conserva la
   // suya y no queda como 'starter', que es el default de personaje_pokemon.
   'pokemon_tag',
+  // La reserva de dados también: el Pokémon llega con los que le quedaban.
+  'hit_dice_pool',
 ]
 
 const TPP    = `"${SCHEMA}"."personaje_pokemon"`
