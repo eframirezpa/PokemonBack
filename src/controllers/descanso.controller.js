@@ -16,6 +16,7 @@ const longRest = async (req, res, next) => {
   try {
     const r = await svc.longRest(req.params.id, req.body)
     if (r.error === 'empty')    return res.status(400).json({ error: 'Hay que elegir al menos a uno' })
+    if (r.error === 'caidos')   return res.status(409).json({ error: `Sin puntos de vida no se puede descansar: ${r.omitidos.join(', ')}`, omitidos: r.omitidos })
     if (r.error === 'notfound') return res.status(404).json({ error: 'No encontrado' })
     res.json(r)
   } catch (e) { next(e) }

@@ -34,14 +34,16 @@ const participantes = async (id_personaje) => {
   const { rows: pj } = await query(
     `SELECT id_personaje, nombre_personaje, personaje_hit_dice,
             COALESCE(personaje_hit_dice_left, 0) AS dados,
-            COALESCE(hit_dice_pool, 0) AS dados_max
+            COALESCE(hit_dice_pool, 0) AS dados_max,
+            COALESCE(personaje_current_hp, 0) AS hp
        FROM ${T} WHERE id_personaje = $1`, [id_personaje])
   if (!pj[0]) return { error: 'notfound' }
 
   const { rows: pks } = await query(
     `SELECT id_personaje_pokemon, pokemon_apodo, pokemon_hit_dice,
             COALESCE(pokemon_hit_dice_left, 0) AS dados,
-            COALESCE(hit_dice_pool, 0) AS dados_max
+            COALESCE(hit_dice_pool, 0) AS dados_max,
+            COALESCE(pokemon_current_hp, 0) AS hp
        FROM ${TPP} WHERE id_personaje = $1
       ORDER BY pokemon_apodo, id_personaje_pokemon`, [id_personaje])
 
@@ -52,6 +54,7 @@ const participantes = async (id_personaje) => {
       hit_dice: pj[0].personaje_hit_dice || null,
       cara: hitDiceMax(pj[0].personaje_hit_dice),
       dados: entero(pj[0].dados), dados_max: entero(pj[0].dados_max),
+      hp: entero(pj[0].hp), caido: entero(pj[0].hp) <= 0,
     },
     pokemons: pks.map(p => ({
       id: Number(p.id_personaje_pokemon),
@@ -59,6 +62,7 @@ const participantes = async (id_personaje) => {
       hit_dice: p.pokemon_hit_dice || null,
       cara: hitDiceMax(p.pokemon_hit_dice),
       dados: entero(p.dados), dados_max: entero(p.dados_max),
+      hp: entero(p.hp), caido: entero(p.hp) <= 0,
     })),
   }
 }
@@ -81,34 +85,50 @@ const longRest = async (id_personaje, { entrenador = false, pokemons = [] } = {}
   const ids = [...new Set((Array.isArray(pokemons) ? pokemons : []).map(Number).filter(Boolean))]
   if (!entrenador && !ids.length) return { error: 'empty' }
 
-  // Solo Pokémon de este entrenador: la lista llega del cliente.
+  // Solo Pokémon de este entrenador: la lista llega del cliente. Y solo los que
+  // sigan en pie: un descanso largo cura y repone, no revive. Quien esté en 0
+  // puntos de vida se omite y se informa, en vez de tumbar todo el descanso.
   let propios = []
+  const omitidos = []
   if (ids.length) {
     const { rows } = await query(
-      `SELECT id_personaje_pokemon FROM ${TPP}
+      `SELECT id_personaje_pokemon, pokemon_apodo, COALESCE(pokemon_current_hp, 0) AS hp
+         FROM ${TPP}
         WHERE id_personaje = $1 AND id_personaje_pokemon = ANY($2::int[])`, [id_personaje, ids])
-    propios = rows.map(r => Number(r.id_personaje_pokemon))
+    for (const r of rows) {
+      if (entero(r.hp) > 0) propios.push(Number(r.id_personaje_pokemon))
+      else omitidos.push(r.pokemon_apodo)
+    }
   }
-  if (!entrenador && !propios.length) return { error: 'notfound' }
 
   // ── Máximos, fuera de la transacción ──
   let hpEntrenador = null
+  let vaElEntrenador = false
   if (entrenador) {
     const full = await findFullById(id_personaje)
     if (!full) return { error: 'notfound' }
-    hpEntrenador = effectiveMaxHp(full)
+    if (entero(full.personaje_current_hp) > 0) {
+      vaElEntrenador = true
+      hpEntrenador = effectiveMaxHp(full)
+    } else {
+      omitidos.push(full.nombre_personaje)
+    }
+  }
+
+  if (!vaElEntrenador && !propios.length) {
+    return omitidos.length ? { error: 'caidos', omitidos } : { error: 'notfound' }
   }
   const hpPokemon = new Map()
   for (const idpp of propios) {
     const d = await findPokemonDetail(idpp)
     if (d) hpPokemon.set(idpp, entero(d.pokemon_hp))
   }
-  const recursos = entrenador ? await maximosDeRuta(id_personaje) : []
+  const recursos = vaElEntrenador ? await maximosDeRuta(id_personaje) : []
 
   return transaction(async (client) => {
-    const hecho = { entrenador: false, pokemons: [], recursos: 0, movimientos: 0 }
+    const hecho = { entrenador: false, pokemons: [], recursos: 0, movimientos: 0, omitidos }
 
-    if (entrenador) {
+    if (vaElEntrenador) {
       await client.query(
         `UPDATE ${T}
             SET personaje_current_hp    = $2,

@@ -4,7 +4,7 @@
 //   El rasgo con target 'positive_bond_pokemon' (hoy: Commander, nivel 2) sube
 //   el nivel de vínculo, pero SOLO a los Pokémon que ya lo tienen positivo: uno
 //   Neutral (0) o peor no gana nada, la ruta premia el vínculo existente.
-//   El starter del entrenador sube 2 en vez de 1.
+//   El starter recibe el +1 general MÁS 2 propios, o sea 3 en total.
 //
 // Se calcula al leer y no se persiste: el starter puede cambiar, un Pokémon
 // puede subir o bajar de vínculo, y el bono debe alcanzar también a los que
@@ -21,6 +21,9 @@ const TPPB = `"${SCHEMA}"."personaje_path_bonus"`
 
 // Rango que admite personaje_pokemon_bond_points: los siete niveles de bonds.
 const BOND_MIN = -3, BOND_MAX = 3
+
+// Lo que sube el rasgo: uno a todo el que califique, y dos más si es el starter.
+const BONO_GENERAL = 1, BONO_STARTER = 2
 const acotar = n => Math.max(BOND_MIN, Math.min(BOND_MAX, Math.floor(Number(n) || 0)))
 
 /**
@@ -72,6 +75,26 @@ const setBondPoints = async (id_personaje, id_personaje_pokemon, puntosRaw, run 
   return fin[0] || { error: 'notfound' }
 }
 
+/**
+ * Nombre de la ruta que le dio el rasgo de vínculo, o null si no lo tiene.
+ *
+ * Sirve para decir en la ficha que el vínculo viene de la ruta. Se resuelve al
+ * leer y no guarda cuántos puntos aportó: los puntos se mueven a mano después,
+ * así que cualquier número que guardáramos quedaría mintiendo. La nota solo
+ * afirma lo que sigue siendo cierto: que el entrenador tiene el rasgo.
+ */
+const rutaDelBonoBond = async (id_personaje, run = query) => {
+  const { rows } = await run(
+    `SELECT p.path_name AS nombre
+       FROM ${TPPB} pb
+       JOIN ${T} pj ON pj.id_personaje = pb.personaje_path_bonus_personaje_id
+       LEFT JOIN "${SCHEMA}"."paths" p ON p.path_id = pj.personaje_path
+      WHERE pb.personaje_path_bonus_personaje_id = $1
+        AND lower(pb.personaje_path_bonus_type) = 'bond_bonus'
+      LIMIT 1`, [id_personaje])
+  return rows.length ? (rows[0].nombre || null) : null
+}
+
 /** ¿La ruta del entrenador le dio el rasgo de vínculo? */
 const tieneBonoBond = async (id_personaje, run = query) => {
   const { rows } = await run(
@@ -108,7 +131,7 @@ const calcular = async (id_personaje, run, soloPreview = false) => {
     [id_personaje, BOND_MAX]
   )
   return rows.map(r => {
-    const sube  = r.es_starter ? 2 : 1
+    const sube  = BONO_GENERAL + (r.es_starter ? BONO_STARTER : 0)
     const tope  = Number(r.tope) || 3
     const nuevo = Math.min(Number(r.nivel) + sube, tope)
     return {
@@ -149,6 +172,6 @@ const bondExtraDelPersonaje = async (id_personaje, run = query) => {
 const previewBond = (id_personaje, run = query) => calcular(id_personaje, run, true)
 
 module.exports = {
-  tieneBonoBond, bondExtraDelPersonaje, previewBond,
+  tieneBonoBond, rutaDelBonoBond, bondExtraDelPersonaje, previewBond,
   sincronizarBond, sincronizarBondSeguro, setBondPoints, aplicarBonoBond, BOND_MIN, BOND_MAX,
 }

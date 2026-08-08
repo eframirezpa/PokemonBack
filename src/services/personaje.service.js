@@ -2,7 +2,7 @@ const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
 const { recalcularSeguro } = require('./trainer_level.service')
 const { stabExtraDelPersonaje } = require('../lib/stab')
-const { bondExtraDelPersonaje, sincronizarBondSeguro, setBondPoints } = require('../lib/bond')
+const { bondExtraDelPersonaje, rutaDelBonoBond, sincronizarBondSeguro, setBondPoints } = require('../lib/bond')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -540,10 +540,14 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
     ? (await bondExtraDelPersonaje(pp.id_personaje)).get(Number(id_personaje_pokemon)) || null
     : null
 
+  // Ruta que otorgó el rasgo de vínculo, para poder decirlo en la ficha
+  const bondRuta = pp.id_personaje ? await rutaDelBonoBond(pp.id_personaje) : null
+
   return {
     pokemon_stab_extra: stabExtra,
     pokemon_bond_extra: bondInfo?.extra || 0,
     pokemon_bond_nivel_nuevo: bondInfo?.nivel_nuevo ?? null,
+    pokemon_bond_ruta: bondRuta,
     ...fixMedia(pp), pokemon_hp, stats, skills, moves, pasivas, exp_next, feats }
 }
 
