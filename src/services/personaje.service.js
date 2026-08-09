@@ -3,6 +3,7 @@ const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
 const { recalcularSeguro } = require('./trainer_level.service')
 const { stabExtraDelPersonaje } = require('../lib/stab')
 const { bondExtraDelPersonaje, rutaDelBonoBond, sincronizarBondSeguro, setBondPoints } = require('../lib/bond')
+const { coincidenciasPorPokemon } = require('../lib/especializacion')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -542,6 +543,19 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
 
   // Ruta que otorgó el rasgo de vínculo, para poder decirlo en la ficha
   const bondRuta = pp.id_personaje ? await rutaDelBonoBond(pp.id_personaje) : null
+
+  // Bono de especialización a las habilidades: +1 por cada especialización del
+  // entrenador cuyo tipo coincida con uno del Pokémon, y solo en las habilidades
+  // cuya característica asociada sea proficiente (pokemon_stats_<stat>_prof).
+  // Un Pokémon de dos tipos con dos especializaciones que encajen suma 2.
+  const espExtra = pp.id_personaje
+    ? (await coincidenciasPorPokemon(pp.id_personaje)).get(Number(id_personaje_pokemon)) || 0
+    : 0
+  for (const s of skills) {
+    const ab = (s.skill_related_ability || '').toLowerCase()
+    const proficienteEnLaStat = !!stats?.[`pokemon_stats_${ab}_prof`]
+    s.especializacion_extra = (espExtra > 0 && proficienteEnLaStat) ? espExtra : 0
+  }
 
   return {
     pokemon_stab_extra: stabExtra,

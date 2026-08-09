@@ -14,6 +14,7 @@
 // cambia con el tiempo y también alcanza a los Pokémon que lleguen después.
 // Persistir el número lo dejaría desactualizado en silencio.
 const { query, SCHEMA } = require('../config/db')
+const { coincidenciasPorPokemon } = require('./especializacion')
 
 const TPP  = `"${SCHEMA}"."personaje_pokemon"`
 const TPT  = `"${SCHEMA}"."pokemon_types"`
@@ -37,22 +38,9 @@ const tieneBonoStab = async (id_personaje, run = query) => {
  */
 const stabExtraDelPersonaje = async (id_personaje, run = query) => {
   if (!(await tieneBonoStab(id_personaje, run))) return new Map()
-
-  const { rows } = await run(
-    `SELECT pp.id_personaje_pokemon AS id,
-            COUNT(DISTINCT s.specialization_id)::int AS extra
-       FROM ${TPP} pp
-       LEFT JOIN ${TPT} t1 ON t1.pokemon_types_id = pp.personaje_pokemon_type_1
-       LEFT JOIN ${TPT} t2 ON t2.pokemon_types_id = pp.personaje_pokemon_type_2
-       JOIN ${TSP} s ON lower(s.specialization_pokemon_type_name) IN (
-              lower(t1.pokemon_types_name), lower(t2.pokemon_types_name))
-      WHERE pp.id_personaje = $1
-        AND s.specialization_id IN (
-              SELECT DISTINCT id_specializations FROM ${TPSB} WHERE id_personaje = $1)
-      GROUP BY pp.id_personaje_pokemon`,
-    [id_personaje]
-  )
-  return new Map(rows.map(r => [Number(r.id), Number(r.extra)]))
+  // El conteo vive en lib/especializacion: lo comparte con el bono a las
+  // habilidades, y las dos coincidencias deben contarse igual.
+  return coincidenciasPorPokemon(id_personaje, run)
 }
 
 /**
