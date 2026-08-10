@@ -201,23 +201,138 @@ const getParticipacion = async (id_partida, user_id) => {
 
 // Party: todos los personajes de una partida (con su user_id) + sus Pokémon del cinturón.
 // Solo lectura, para el panel "Party".
-// Stats y feats (con bonos) de un Pokémon del entrenador: lo que necesita el
-// cálculo del HP máximo efectivo.
-const pokemonStatsAndFeats = async (id_personaje_pokemon) => {
-  const { rows: st } = await query(
-    `SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
-  const { rows: feats } = await query(
-    `SELECT COALESCE((
-              SELECT json_agg(json_build_object(
-                'type',  b.personaje_pokemon_feat_bonus_type,
-                'llave', b.personaje_pokemon_feat_bonus_llave,
-                'value', b.personaje_pokemon_feat_bonus_value
-              ))
-              FROM ${TPPFB} b
-              WHERE b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id = pf.personaje_pokemon_feat_id
-            ), '[]') AS bonos
-     FROM ${TPPF} pf WHERE pf.id_trainer_pokemon = $1`, [id_personaje_pokemon])
-  return { stats: st[0] || null, feats }
+// ── HP máximo de toda la party en un puñado de consultas ────────────────────
+//
+// La party solo necesita el HP MÁXIMO de cada personaje y de cada Pokémon, y ese
+// número se calcula en vivo. Antes se obtenía llamando a findFullById por
+// personaje: 11 consultas cada uno, más 2 por Pokémon. Con 20 personajes eran
+// ~358 idas y vueltas. En local no se nota, pero en producción cada una cruza a
+// Supabase y se convierten en segundos.
+//
+// Aquí se piden los mismos datos con consultas de conjunto y se arma, por
+// personaje, EL MISMO objeto que espera effectiveMaxHp. Se reutiliza esa función
+// a propósito: si la fórmula cambia, cambia para los dos caminos a la vez.
+//
+// Solo se traen los campos que la fórmula lee. Equipo, armas, armaduras,
+// habilidades y detalles se quedaban sin usar y ya no se piden.
+const hpMaximosDeParty = async (ids, filasPokemon) => {
+  const personajes = new Map(), pokemons = new Map()
+  if (!ids.length) return { personajes, pokemons }
+
+  const agrupar = (rows, llave) => {
+    const m = new Map()
+    for (const r of rows) {
+      const k = r[llave]
+      if (!m.has(k)) m.set(k, [])
+      m.get(k).push(r)
+    }
+    return m
+  }
+
+  const [base, stats, armorProfs, specBonos, extraFeats] = await Promise.all([
+    query(
+      `SELECT p.id_personaje, p.personaje_hp, p.personaje_level,
+              o.origin_feat_id, b.background_feat_id,
+              b.background_armor_proficiencies_value_1, b.background_armor_proficiencies_value_2,
+              b.background_armor_proficiencies_value_3, b.background_armor_proficiencies_value_4
+         FROM ${T} p
+         LEFT JOIN ${TORIGINS} o     ON o.origin_id     = p.personaje_origin
+         LEFT JOIN ${TBACKGROUNDS} b ON b.background_id = p.personaje_background
+        WHERE p.id_personaje = ANY($1::int[])`, [ids]).then(r => r.rows),
+    query(`SELECT * FROM ${TS} WHERE id_personaje = ANY($1::int[])`, [ids]).then(r => r.rows),
+    query(`SELECT id_personaje, armor_prof FROM ${TPAP} WHERE id_personaje = ANY($1::int[])`, [ids]).then(r => r.rows),
+    query(
+      `SELECT id_personaje,
+              tipo_personaje_specializations_bonus  AS type,
+              llave_personaje_specializations_bonus AS llave,
+              valor_personaje_specializations_bonus AS value
+         FROM ${TPSB} WHERE id_personaje = ANY($1::int[])`, [ids]).then(r => r.rows),
+    query(
+      `SELECT pf.personaje_id,
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                  'type',  pfb.personaje_feat_bonus_type,
+                  'llave', pfb.personaje_feat_bonus_llave,
+                  'value', pfb.personaje_feat_bonus_value
+                ) ORDER BY pfb.personaje_feat_bonus_id)
+                FROM ${TPFB} pfb WHERE pfb.personaje_feat_bonus_personaje_feat_id = pf.personaje_feat_id
+              ), '[]') AS bonos,
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                  'prereq', fb.feats_bonus_prerequisito,
+                  'valor',  fb.feats_bonus_prerequisito_valor
+                ))
+                FROM ${TFB} fb WHERE fb.id_feat = pf.feat_id AND fb.feats_bonus_prerequisito IS NOT NULL
+              ), '[]') AS prereqs
+         FROM ${TPF} pf
+        WHERE pf.personaje_id = ANY($1::int[])
+        ORDER BY pf.personaje_feat_id`, [ids]).then(r => r.rows),
+  ])
+
+  // Feats de origen y background: los bonos salen del catálogo, igual que en la ficha
+  const featIds = [...new Set(base.flatMap(b => [b.origin_feat_id, b.background_feat_id]).filter(Boolean))]
+  const catalogo = new Map()
+  if (featIds.length) {
+    const { rows } = await query(
+      `SELECT f.feat_id,
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                  'type',  fb.feats_bonus_type,
+                  'llave', fb.feats_bonus_llave,
+                  'value', fb.feats_bonus_valor
+                ) ORDER BY fb.id_feats_bonus)
+                FROM ${TFB} fb WHERE fb.id_feat = f.feat_id
+              ), '[]') AS bonos
+         FROM ${TFEATS} f WHERE f.feat_id = ANY($1::int[])`, [featIds])
+    for (const r of rows) catalogo.set(r.feat_id, r)
+  }
+
+  const statsPor  = new Map(stats.map(s => [s.id_personaje, s]))
+  const armorPor  = agrupar(armorProfs, 'id_personaje')
+  const specPor   = agrupar(specBonos, 'id_personaje')
+  const featsPor  = agrupar(extraFeats, 'personaje_id')
+
+  for (const b of base) {
+    // Todos los bonos de especialidad caben en una sola entrada: la fórmula los suma.
+    const bonosSpec = specPor.get(b.id_personaje) || []
+    personajes.set(b.id_personaje, effectiveMaxHp({
+      ...b,
+      stats: statsPor.get(b.id_personaje) || null,
+      extra_feats: featsPor.get(b.id_personaje) || [],
+      origin_feat: catalogo.get(b.origin_feat_id) || null,
+      background_feat: catalogo.get(b.background_feat_id) || null,
+      specializations: bonosSpec.length ? [{ bonos: bonosSpec }] : [],
+      armor_profs: (armorPor.get(b.id_personaje) || []).map(a => a.armor_prof),
+    }))
+  }
+
+  // ── Pokémon: sus stats y feats, también en bloque ──
+  if (filasPokemon.length) {
+    const idsPokemon = filasPokemon.map(p => p.id_personaje_pokemon)
+    const [pkStats, pkFeats] = await Promise.all([
+      query(`SELECT * FROM ${TPS} WHERE id_personaje_pokemon = ANY($1::int[])`, [idsPokemon]).then(r => r.rows),
+      query(
+        `SELECT pf.id_trainer_pokemon,
+                COALESCE((
+                  SELECT json_agg(json_build_object(
+                    'type',  fb.personaje_pokemon_feat_bonus_type,
+                    'llave', fb.personaje_pokemon_feat_bonus_llave,
+                    'value', fb.personaje_pokemon_feat_bonus_value
+                  ))
+                  FROM ${TPPFB} fb
+                  WHERE fb.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id = pf.personaje_pokemon_feat_id
+                ), '[]') AS bonos
+           FROM ${TPPF} pf WHERE pf.id_trainer_pokemon = ANY($1::int[])`, [idsPokemon]).then(r => r.rows),
+    ])
+    const stPor = new Map(pkStats.map(s => [s.id_personaje_pokemon, s]))
+    const ftPor = agrupar(pkFeats, 'id_trainer_pokemon')
+    // El nivel y el HP base ya vienen en la fila que trajo findParty
+    for (const pk of filasPokemon) {
+      pokemons.set(pk.id_personaje_pokemon, effectivePokemonMaxHp(
+        pk, stPor.get(pk.id_personaje_pokemon) || null, ftPor.get(pk.id_personaje_pokemon) || []))
+    }
+  }
+  return { personajes, pokemons }
 }
 
 const findParty = async (id_partida) => {
@@ -232,29 +347,36 @@ const findParty = async (id_partida) => {
      ORDER BY p.id_personaje`,
     [id_partida]
   )
-  for (const c of chars) {
-    // HP máximo efectivo (base + mod CON + healing de feats/especialidades),
-    // igual que la ficha; personaje_current_hp es un valor absoluto de combate.
-    const full = await findFullById(c.id_personaje)
-    if (full) c.personaje_hp = effectiveMaxHp(full)
+  if (!chars.length) return chars
+  const ids = chars.map(c => c.id_personaje)
 
-    const { rows: pks } = await query(
-      `SELECT pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_hp, pp.pokemon_current_hp,
-              pp.pokemon_level,
-              pp.personaje_pokemon_exahust_lvl, pp.personaje_pokemon_dsts, pp.personaje_pokemon_dstf,
-              pp.pokemon_is_shiny,
-              pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pk.pokemon_media_main
-       FROM ${TPP} pp JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
-       WHERE pp.id_personaje = $1 AND pp.pokemon_en_equipo = true
-       ORDER BY pp.id_personaje_pokemon`,
-      [c.id_personaje]
-    )
-    // Máximo efectivo del Pokémon (base guardada + modCON × nivel), igual que la ficha
-    for (const pk of pks) {
-      const { stats, feats } = await pokemonStatsAndFeats(pk.id_personaje_pokemon)
-      pk.pokemon_hp = effectivePokemonMaxHp(pk, stats, feats)
-    }
-    c.pokemons = pks.map(fixMedia)
+  // Los Pokémon de toda la party en una sola consulta
+  const { rows: pks } = await query(
+    `SELECT pp.id_personaje, pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_hp, pp.pokemon_current_hp,
+            pp.pokemon_level,
+            pp.personaje_pokemon_exahust_lvl, pp.personaje_pokemon_dsts, pp.personaje_pokemon_dstf,
+            pp.pokemon_is_shiny,
+            pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pk.pokemon_media_main
+     FROM ${TPP} pp JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
+     WHERE pp.id_personaje = ANY($1::int[]) AND pp.pokemon_en_equipo = true
+     ORDER BY pp.id_personaje, pp.id_personaje_pokemon`,
+    [ids]
+  )
+
+  // HP máximo efectivo (base + mod CON + healing de feats/especialidades), igual
+  // que la ficha; personaje_current_hp es un valor absoluto de combate.
+  const { personajes, pokemons } = await hpMaximosDeParty(ids, pks)
+
+  const porPersonaje = new Map(ids.map(id => [id, []]))
+  for (const pk of pks) {
+    const dueno = pk.id_personaje
+    pk.pokemon_hp = pokemons.get(pk.id_personaje_pokemon) ?? pk.pokemon_hp
+    delete pk.id_personaje   // no viajaba en la respuesta; solo servía para agrupar
+    porPersonaje.get(dueno)?.push(fixMedia(pk))
+  }
+  for (const c of chars) {
+    if (personajes.has(c.id_personaje)) c.personaje_hp = personajes.get(c.id_personaje)
+    c.pokemons = porPersonaje.get(c.id_personaje) || []
   }
   return chars
 }
