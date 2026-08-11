@@ -567,7 +567,7 @@ const setPokemonEnJuego = async (id_personaje, id_personaje_pokemon, enJuego) =>
 // Detalle completo de un Pokémon del personaje (tipo pokédex, con datos persistidos)
 const findPokemonDetail = async (id_personaje_pokemon) => {
   const { rows } = await query(
-    `SELECT pp.*, pk.pokemon_name, pk.pokemon_type_1, pk.pokemon_type_2,
+    `SELECT pp.*, pk.pokemon_name, pk.pokemon_type_1, pk.pokemon_type_2, pk.pokemon_sr,
             pk.pokemon_media_main, pk.pokemon_media_main_shiny, pk.pokemon_media_sprite,
             n.nature_name, n.nature_effect_increase, n.nature_effect_increase_value,
             n.nature_effect_decrease, n.nature_effect_decrease_value,
