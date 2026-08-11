@@ -2,8 +2,9 @@ const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
 const { recalcularSeguro } = require('./trainer_level.service')
 const { stabExtraDelPersonaje } = require('../lib/stab')
-const { bondExtraDelPersonaje, rutaDelBonoBond, sincronizarBondSeguro, setBondPoints } = require('../lib/bond')
+const { bondExtraDelPersonaje, rutaDelBonoBond, setBondNivel, opcionesDeBond, spendBondPoints, setBondPoints } = require('../lib/bond')
 const { coincidenciasPorPokemon } = require('../lib/especializacion')
+const { maximoOCero } = require('../lib/recurso_formula')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -679,11 +680,24 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
     s.especializacion_extra = (espExtra > 0 && proficienteEnLaStat) ? espExtra : 0
   }
 
+  // Recursos de ruta con target 'pokemon': son los de ESTE Pokémon, ya con el
+  // punto extra del rasgo. Si el entrenador no tiene el rasgo, bondInfo viene
+  // vacío y la pestaña no muestra nada.
+  const path_recursos = bondInfo ? [{
+    id: Number(id_personaje_pokemon),
+    nombre: 'Bond Points',
+    actual: bondInfo.actual,
+    maximo: bondInfo.maximo,
+    extra: bondInfo.extra,
+  }] : []
+
   return {
     pokemon_stab_extra: stabExtra,
     pokemon_bond_extra: bondInfo?.extra || 0,
-    pokemon_bond_nivel_nuevo: bondInfo?.nivel_nuevo ?? null,
+    pokemon_bond_actual: bondInfo?.actual ?? null,
+    pokemon_bond_maximo: bondInfo?.maximo ?? null,
     pokemon_bond_ruta: bondRuta,
+    path_recursos,
     ...fixMedia(pp), pokemon_hp, stats, skills, moves, pasivas, exp_next, feats }
 }
 
@@ -780,8 +794,8 @@ const addPokemonExperience = async (id_personaje_pokemon, amountRaw) => {
     // Si el Pokémon subió, sus niveles cuentan para el entrenador
     let nivel_entrenador = null
     if (leveled_up) {
-      // Revalida su vínculo contra bonds por si los puntos cambiaron
-      await sincronizarBondSeguro({ id_personaje_pokemon }, (t, p) => client.query(t, p))
+      // El vínculo NO se recalcula desde los puntos: son dos cosas separadas.
+      // Subir de nivel no cambia el nivel de vínculo del Pokémon.
       const { rows: dueño } = await client.query(
         `SELECT id_personaje FROM ${TPP} WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon])
       if (dueño[0]?.id_personaje != null) {
@@ -1230,12 +1244,12 @@ const findFullById = async (id_personaje) => {
       WHERE personaje_path_bonus_personaje_id = $1
         AND lower(personaje_path_bonus_type) = 'resource'
       ORDER BY personaje_path_bonus_level, personaje_path_bonus_id`, [id_personaje])
-  const recursos = recursosRows.map(r => ({
+  const recursos = await Promise.all(recursosRows.map(async r => ({
     id: Number(r.id), nombre: r.nombre, columna: r.columna,
     actual: Math.max(0, Number(r.actual) || 0),
-    maximo: Math.max(0, Number(personaje[r.columna]) || 0),
+    maximo: await maximoOCero(r.columna, { id_personaje }),
     level: Number(r.level),
-  }))
+  })))
 
   const { rows: pathBonosRows } = await query(
     `SELECT personaje_path_bonus_id   AS id,
@@ -1484,8 +1498,7 @@ const setPathResource = async (id_personaje, id_bonus, actualRaw) => {
         AND pb.personaje_path_bonus_personaje_id = $2
         AND lower(pb.personaje_path_bonus_type) = 'resource'`, [id_bonus, id_personaje])
   if (!rows[0]) return { error: 'notfound' }
-  const { rows: pj } = await query(`SELECT * FROM ${T} WHERE id_personaje = $1`, [id_personaje])
-  const maximo = Math.max(0, Number(pj[0]?.[rows[0].columna]) || 0)
+  const maximo = await maximoOCero(rows[0].columna, { id_personaje })
   const actual = Math.min(Math.max(0, Math.floor(Number(actualRaw) || 0)), maximo)
   await query(
     `UPDATE ${TPPB} SET personaje_path_bonus_target = $1 WHERE personaje_path_bonus_id = $2`,
@@ -1544,10 +1557,17 @@ const setHitDice         = (id_personaje, actual)         => fijarDados('trainer
 const spendHitDicePokemon = (id_personaje, idpp, cantidad) => gastarDados('pokemon', [idpp, id_personaje], cantidad)
 const setHitDicePokemon   = (id_personaje, idpp, actual)   => fijarDados('pokemon', [idpp, id_personaje], actual)
 
-// Edita a mano los puntos de vínculo de un Pokémon. Tras persistir, deja
-// personaje_pokemon_bond en el nivel que corresponda.
-const updateBondPoints = (id_personaje, id_personaje_pokemon, puntos) =>
-  setBondPoints(id_personaje, id_personaje_pokemon, puntos)
+// Mueve a mano el vínculo de un Pokémon, un escalón arriba o abajo. Los puntos
+// gastables no se tocan: son otra cosa.
+const updateBondPoints = (id_personaje, id_personaje_pokemon, bond_id) =>
+  setBondNivel(id_personaje, id_personaje_pokemon, bond_id)
+
+// Los tres vínculos entre los que puede moverse, para pintar el desplegable
+const bondOpciones = (id_personaje_pokemon) => opcionesDeBond(id_personaje_pokemon)
+
+// Puntos de vínculo gastables del Pokémon, con el mismo contrato que los demás
+const gastarBondPoints = (id, idpp, cantidad) => spendBondPoints(id, idpp, cantidad)
+const fijarBondPoints  = (id, idpp, valor)    => setBondPoints(id, idpp, valor)
 
 // ── Especializaciones del personaje (personaje_specializations_bonus) ──
 // Agrega una especialización copiando sus bonos resueltos. No permite repetir la misma.
@@ -2037,7 +2057,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
 }
 
 module.exports = {
-  updateBondPoints,
+  updateBondPoints, bondOpciones, gastarBondPoints, fijarBondPoints,
   spendPathResource, setPathResource,
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   findByPartidaUser, findParty, findById, findFullById,

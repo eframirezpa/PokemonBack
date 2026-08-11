@@ -18,12 +18,15 @@
 const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp } = require('../lib/hp')
 const { hitDiceMax } = require('../lib/hitdice')
+const { maximoOCero } = require('../lib/recurso_formula')
+const { extraDelRasgo } = require('../lib/bond')
 const { findFullById, findPokemonDetail } = require('./personaje.service')
 
 const T    = `"${SCHEMA}"."personaje"`
 const TPP  = `"${SCHEMA}"."personaje_pokemon"`
 const TPPM = `"${SCHEMA}"."personaje_pokemon_moves"`
 const TPPB = `"${SCHEMA}"."personaje_path_bonus"`
+const TB   = `"${SCHEMA}"."bonds"`
 
 const entero = (v, def = 0) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? n : def }
 
@@ -76,8 +79,9 @@ const maximosDeRuta = async (id_personaje) => {
       WHERE personaje_path_bonus_personaje_id = $1
         AND lower(personaje_path_bonus_type) = 'resource'`, [id_personaje])
   if (!rows.length) return []
-  const { rows: pj } = await query(`SELECT * FROM ${T} WHERE id_personaje = $1`, [id_personaje])
-  return rows.map(r => ({ id: r.id, maximo: Math.max(0, entero(pj[0]?.[r.columna])) }))
+  return Promise.all(rows.map(async r => ({
+    id: r.id, maximo: await maximoOCero(r.columna, { id_personaje }),
+  })))
 }
 
 // ── Descanso largo ──────────────────────────────────────────────────────────
@@ -124,6 +128,8 @@ const longRest = async (id_personaje, { entrenador = false, pokemons = [] } = {}
     if (d) hpPokemon.set(idpp, entero(d.pokemon_hp))
   }
   const recursos = vaElEntrenador ? await maximosDeRuta(id_personaje) : []
+  // El punto que suma el rasgo al pool de vínculo, si el entrenador lo tiene
+  const extraBond = await extraDelRasgo(id_personaje)
 
   return transaction(async (client) => {
     const hecho = { entrenador: false, pokemons: [], recursos: 0, movimientos: 0, omitidos }
@@ -159,6 +165,17 @@ const longRest = async (id_personaje, { entrenador = false, pokemons = [] } = {}
                 pokemon_hit_dice_left          = COALESCE(hit_dice_pool, 0)
           WHERE id_personaje_pokemon = $1`,
         [idpp, hpPokemon.get(idpp) ?? 0])
+
+      // Bond points al tope efectivo: los del nivel más el punto del rasgo, que
+      // ahora forma parte del pool y se gasta como cualquier otro.
+      await client.query(
+        `UPDATE ${TPP} pp
+            SET personaje_pokemon_bond_current_points =
+                  COALESCE(pp.personaje_pokemon_bond_points, 0)
+                  + CASE WHEN COALESCE(b.bond_level, 0) > 0 THEN $2::int ELSE 0 END
+           FROM ${TB} b
+          WHERE b.bond_id = pp.personaje_pokemon_bond
+            AND pp.id_personaje_pokemon = $1`, [idpp, extraBond])
 
       // PP al tope. Un movimiento con máximo 0 es ilimitado y se queda igual.
       const { rowCount } = await client.query(

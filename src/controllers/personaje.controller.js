@@ -188,11 +188,33 @@ const setHitDicePokemon = async (req, res, next) => {
   catch (e) { next(e) }
 }
 
-// PUT /personaje/:id/pokemon/:idpp/bond  { puntos } → edita el vínculo a mano
+// PATCH /personaje/:id/pokemon/:idpp/bond-points  { cantidad } → gasta puntos
+const spendBondPoints = async (req, res, next) => {
+  try { responderDados(res, await svc.gastarBondPoints(req.params.id, req.params.idpp, req.body.cantidad)) }
+  catch (e) { next(e) }
+}
+
+// PUT /personaje/:id/pokemon/:idpp/bond-points  { actual } → fija los puntos
+const setBondPoints = async (req, res, next) => {
+  try { responderDados(res, await svc.fijarBondPoints(req.params.id, req.params.idpp, req.body.actual)) }
+  catch (e) { next(e) }
+}
+
+// GET /personaje/:id/pokemon/:idpp/bond → los tres vínculos entre los que puede moverse
+const getBondOpciones = async (req, res, next) => {
+  try {
+    const r = await svc.bondOpciones(req.params.idpp)
+    if (r.error === 'notfound') return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+// PUT /personaje/:id/pokemon/:idpp/bond  { bond_id } → mueve el vínculo un escalón
 const updateBondPoints = async (req, res, next) => {
   try {
-    const r = await svc.updateBondPoints(req.params.id, req.params.idpp, req.body.puntos)
+    const r = await svc.updateBondPoints(req.params.id, req.params.idpp, req.body.bond_id)
     if (r.error === 'notfound') return res.status(404).json({ error: 'Pokémon no encontrado' })
+    if (r.error === 'fuera_de_rango') return res.status(400).json({ error: 'Solo se puede subir o bajar un nivel', opciones: r.opciones })
     res.json(r)
   } catch (e) { next(e) }
 }
@@ -411,7 +433,7 @@ module.exports = {
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
-  spendPathResource, setPathResource, updateBondPoints,
+  spendPathResource, setPathResource, updateBondPoints, getBondOpciones, spendBondPoints, setBondPoints,
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
   renamePokemon, releasePokemon, transferPokemon, pendingRenames, spendMovePP, setMovePP,

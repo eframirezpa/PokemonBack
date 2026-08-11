@@ -32,7 +32,10 @@ router.get('/:id/pokemon/pending-rename', authenticate, ctrl.pendingRenames)
 router.get('/:id/pokemon',         authenticate, ctrl.getPokemon)
 router.post('/:id/pokemon',        authenticate, ctrl.addPokemon)
 
+router.get('/:id/pokemon/:idpp/bond', authenticate, ctrl.getBondOpciones)
 router.put('/:id/pokemon/:idpp/bond', authenticate, ctrl.updateBondPoints)
+router.patch('/:id/pokemon/:idpp/bond-points', authenticate, ctrl.spendBondPoints)
+router.put('/:id/pokemon/:idpp/bond-points',   authenticate, ctrl.setBondPoints)
 
 // Recursos que otorga la ruta (puntos gastables, tipo PP)
 router.patch('/:id/path-resource/:idb', authenticate, ctrl.spendPathResource)

@@ -1,17 +1,21 @@
-// Bono de vínculo que la ruta del entrenador otorga a sus Pokémon.
+// Vínculo de los Pokémon y el rasgo de ruta que lo mejora.
 //
-// REGLA
-//   El rasgo con target 'positive_bond_pokemon' (hoy: Commander, nivel 2) sube
-//   el nivel de vínculo, pero SOLO a los Pokémon que ya lo tienen positivo: uno
-//   Neutral (0) o peor no gana nada, la ruta premia el vínculo existente.
-//   El starter recibe el +1 general MÁS 2 propios, o sea 3 en total.
+// REGLA (Commander, nivel 2)
+//   Es un recurso con target 'pokemon': existe para TODOS los Pokémon del
+//   entrenador, y cada uno lleva su propio contador en su fila
+//   (personaje_pokemon_bond_current_points sobre personaje_pokemon_bond_points).
 //
-// Se calcula al leer y no se persiste: el starter puede cambiar, un Pokémon
-// puede subir o bajar de vínculo, y el bono debe alcanzar también a los que
-// lleguen después. Guardar el número lo dejaría obsoleto en silencio.
+//   Al MOSTRARLO, el Pokémon cuyo vínculo tenga puntos positivos suma 1 a los
+//   dos valores. Ese punto no se guarda: es del rasgo, así que aparece y
+//   desaparece con él.
 //
-// TOPE: bonds llega hasta el nivel 3 (Incredible Bond). Un +1 sobre un 3 no
-// tiene fila que mostrar, así que se recorta ahí.
+//   Además, al otorgarse el rasgo el STARTER sube 2 NIVELES de vínculo. Eso sí
+//   se persiste, pero no en los puntos: se reapunta personaje_pokemon_bond al
+//   bond del nivel resultante. Ver subirBondDelStarter.
+//
+// Sin el rasgo, los bond points no existen para ese entrenador y no se muestran.
+//
+// TOPE: bonds llega hasta el nivel 3 (Incredible Bond) y baja hasta -3.
 const { query, SCHEMA } = require('../config/db')
 
 const T    = `"${SCHEMA}"."personaje"`
@@ -58,19 +62,73 @@ const sincronizarBondSeguro = async (filtro, run = query) => {
   }
 }
 
-/** Fija los puntos de vínculo a mano y deja el nivel en su sitio */
-const setBondPoints = async (id_personaje, id_personaje_pokemon, puntosRaw, run = query) => {
-  const puntos = acotar(puntosRaw)
+/**
+ * Deja los puntos del Pokémon acordes a su nivel de vínculo.
+ *
+ * bond_points es función del nivel: lo dice el catálogo. Cada vez que el nivel
+ * se mueve —por el rasgo de la ruta o por el máster— los puntos tienen que
+ * seguirlo, o el Pokémon acaba en Great Trust con el máximo de un Neutral.
+ * El actual se repone al nuevo máximo, porque el tope acaba de cambiar.
+ */
+const sincronizarPuntosConNivel = async (id_personaje_pokemon, run = query, extra = 0) => {
   const { rows } = await run(
-    `UPDATE ${TPP} SET personaje_pokemon_bond_points = $3
+    `UPDATE ${TPP} pp
+        SET personaje_pokemon_bond_points         = b.bond_points,
+            personaje_pokemon_bond_current_points = b.bond_points
+                                                  + CASE WHEN b.bond_level > 0 THEN $2::int ELSE 0 END
+       FROM ${TB} b
+      WHERE b.bond_id = pp.personaje_pokemon_bond
+        AND pp.id_personaje_pokemon = $1
+      RETURNING pp.personaje_pokemon_bond_points AS puntos`,
+    [id_personaje_pokemon, Math.max(0, Number(extra) || 0)])
+  return rows[0]?.puntos ?? null
+}
+
+/**
+ * Los tres vínculos entre los que el máster puede mover a un Pokémon: el que
+ * tiene ahora, el de un nivel por encima y el de un nivel por debajo.
+ *
+ * Se mueve de a un escalón para que el vínculo sea algo que se gana o se pierde
+ * poco a poco en la mesa, no un desplegable con los siete niveles.
+ */
+const opcionesDeBond = async (id_personaje_pokemon, run = query) => {
+  const { rows: act } = await run(
+    `SELECT COALESCE(b.bond_level, 0) AS nivel, b.bond_id
+       FROM ${TPP} pp LEFT JOIN ${TB} b ON b.bond_id = pp.personaje_pokemon_bond
+      WHERE pp.id_personaje_pokemon = $1`, [id_personaje_pokemon])
+  if (!act.length) return { error: 'notfound' }
+  const nivel = Number(act[0].nivel)
+
+  const { rows } = await run(
+    `SELECT bond_id, bond_name, bond_level, bond_description
+       FROM ${TB} WHERE bond_level BETWEEN $1 AND $2
+      ORDER BY bond_level DESC`,
+    [Math.max(BOND_MIN, nivel - 1), Math.min(BOND_MAX, nivel + 1)])
+  return { actual: act[0].bond_id ?? null, nivel, opciones: rows }
+}
+
+/**
+ * Mueve el vínculo a uno de esos tres. No toca los puntos: con las reglas
+ * nuevas el nivel y los puntos gastables son cosas distintas.
+ */
+const setBondNivel = async (id_personaje, id_personaje_pokemon, bond_id, run = query) => {
+  const opts = await opcionesDeBond(id_personaje_pokemon, run)
+  if (opts.error) return opts
+  if (!opts.opciones.some(o => Number(o.bond_id) === Number(bond_id))) {
+    return { error: 'fuera_de_rango', opciones: opts.opciones }
+  }
+  const { rows } = await run(
+    `UPDATE ${TPP} SET personaje_pokemon_bond = $3
       WHERE id_personaje_pokemon = $1 AND id_personaje = $2
       RETURNING id_personaje_pokemon`,
-    [id_personaje_pokemon, id_personaje, puntos])
+    [id_personaje_pokemon, id_personaje, Number(bond_id)])
   if (!rows.length) return { error: 'notfound' }
-  await sincronizarBond({ id_personaje_pokemon }, run)
+  await sincronizarPuntosConNivel(id_personaje_pokemon, run, await extraDelRasgo(id_personaje, run))
+
   const { rows: fin } = await run(
-    `SELECT pp.personaje_pokemon_bond_points AS puntos, b.bond_id, b.bond_level, b.bond_name
-       FROM ${TPP} pp LEFT JOIN ${TB} b ON b.bond_id = pp.personaje_pokemon_bond
+    `SELECT b.bond_id, b.bond_level, b.bond_name,
+            pp.personaje_pokemon_bond_points AS puntos
+       FROM ${TPP} pp JOIN ${TB} b ON b.bond_id = pp.personaje_pokemon_bond
       WHERE pp.id_personaje_pokemon = $1`, [id_personaje_pokemon])
   return fin[0] || { error: 'notfound' }
 }
@@ -90,9 +148,22 @@ const rutaDelBonoBond = async (id_personaje, run = query) => {
        JOIN ${T} pj ON pj.id_personaje = pb.personaje_path_bonus_personaje_id
        LEFT JOIN "${SCHEMA}"."paths" p ON p.path_id = pj.personaje_path
       WHERE pb.personaje_path_bonus_personaje_id = $1
-        AND lower(pb.personaje_path_bonus_type) = 'bond_bonus'
+        AND lower(pb.personaje_path_bonus_type) = 'resource_pokemon'
       LIMIT 1`, [id_personaje])
   return rows.length ? (rows[0].nombre || null) : null
+}
+
+// Puntos que suma el rasgo, guardados en `target` al confirmarlo. 0 si no lo tiene.
+const EXTRA_DEL_RASGO = 1
+const extraDelRasgo = async (id_personaje, run = query) => {
+  const { rows } = await run(
+    `SELECT personaje_path_bonus_target AS extra FROM ${TPPB}
+      WHERE personaje_path_bonus_personaje_id = $1
+        AND lower(personaje_path_bonus_type) = 'resource_pokemon'
+      LIMIT 1`, [id_personaje])
+  if (!rows.length) return 0
+  const n = parseInt(rows[0].extra, 10)
+  return Number.isFinite(n) ? Math.max(0, n) : EXTRA_DEL_RASGO
 }
 
 /** ¿La ruta del entrenador le dio el rasgo de vínculo? */
@@ -100,78 +171,144 @@ const tieneBonoBond = async (id_personaje, run = query) => {
   const { rows } = await run(
     `SELECT 1 FROM ${TPPB}
       WHERE personaje_path_bonus_personaje_id = $1
-        AND lower(personaje_path_bonus_type) = 'bond_bonus'
+        AND lower(personaje_path_bonus_type) = 'resource_pokemon'
       LIMIT 1`, [id_personaje])
   return rows.length > 0
 }
 
-// Cuánto sube cada Pokémon y a qué nivel queda. `soloPreview` omite la
-// comprobación del rasgo, para poder anticiparlo en la ventana de subida.
+// Bond points de cada Pokémon del entrenador, ya con el punto extra del rasgo.
+//
+// Solo existen si el entrenador tiene el rasgo: sin él se devuelve un mapa
+// vacío y la interfaz no muestra nada. El +1 se suma al vuelo a los dos valores
+// cuando el vínculo del Pokémon es positivo, y nunca se guarda.
+//
+// `soloPreview` omite la comprobación del rasgo, para anticiparlo en la ventana
+// de subida de nivel.
 const calcular = async (id_personaje, run, soloPreview = false) => {
-  if (!soloPreview && !(await tieneBonoBond(id_personaje, run))) return []
-  // Se mira personaje_pokemon_bond_points, que es la fuente de verdad del
-  // vínculo; personaje_pokemon_bond es su reflejo y lo pone sincronizarBond().
+  const extra = soloPreview ? EXTRA_DEL_RASGO : await extraDelRasgo(id_personaje, run)
+  if (!extra && !soloPreview) return []
+
   const { rows } = await run(
-    `SELECT pp.id_personaje_pokemon         AS id,
-            pp.pokemon_apodo                AS apodo,
-            pp.personaje_pokemon_bond_points AS nivel,
-            b.bond_name                     AS nombre,
-            (lower(coalesce(pp.pokemon_tag, '')) = 'starter') AS es_starter,
-            $2::int                         AS tope
+    `SELECT pp.id_personaje_pokemon                        AS id,
+            pp.pokemon_apodo                               AS apodo,
+            COALESCE(pp.personaje_pokemon_bond_current_points, 0) AS actual,
+            COALESCE(pp.personaje_pokemon_bond_points, 0)         AS maximo,
+            COALESCE(b.bond_level, 0)                      AS nivel,
+            b.bond_name                                    AS nombre,
+            (lower(coalesce(pp.pokemon_tag, '')) = 'starter') AS es_starter
        FROM ${TPP} pp
-       JOIN ${T} p ON p.id_personaje = pp.id_personaje
        LEFT JOIN ${TB} b ON b.bond_id = pp.personaje_pokemon_bond
       WHERE pp.id_personaje = $1
-        -- El starter entra siempre; el resto solo si su vínculo ya es positivo.
-        -- Sin la excepción el bono no haría nada en la práctica: Commander llega
-        -- en el nivel 2 y a esas alturas todos suelen estar en 0.
-        AND (lower(coalesce(pp.pokemon_tag, '')) = 'starter'
-             OR pp.personaje_pokemon_bond_points > 0)
-      ORDER BY es_starter DESC, pp.personaje_pokemon_bond_points DESC, pp.pokemon_apodo`,
-    [id_personaje, BOND_MAX]
-  )
+      ORDER BY es_starter DESC, b.bond_level DESC NULLS LAST, pp.pokemon_apodo`,
+    [id_personaje])
+
   return rows.map(r => {
-    const sube  = BONO_GENERAL + (r.es_starter ? BONO_STARTER : 0)
-    const tope  = Number(r.tope) || 3
-    const nuevo = Math.min(Number(r.nivel) + sube, tope)
+    // El punto del rasgo entra en el POOL: amplía el máximo y se gasta como
+    // cualquier otro. Solo lo reciben los de vínculo positivo. El actual va tal
+    // cual está guardado, porque ya incluye ese punto tras reponerse.
+    const suma = Number(r.nivel) > 0 ? (extra || EXTRA_DEL_RASGO) : 0
     return {
       id: Number(r.id), apodo: r.apodo,
       nivel: Number(r.nivel), nombre: r.nombre,
       es_starter: !!r.es_starter,
-      // Lo que realmente sube tras recortar en el tope
-      extra: nuevo - Number(r.nivel),
-      nivel_nuevo: nuevo,
+      actual: Number(r.actual),
+      maximo: Number(r.maximo) + suma,
+      extra: suma,
     }
-  }).filter(x => x.extra > 0)
+  })
 }
 
 /**
- * Aplica el bono de la ruta a los puntos de vínculo y deja el nivel al día.
- * Se llama al otorgar el rasgo: a partir de ahí los puntos son un valor propio
- * del Pokémon, que el máster puede seguir moviendo a mano.
+ * Sube el NIVEL de vínculo del starter, sin tocar sus puntos.
+ *
+ * Commander da +2 niveles al starter. No se suman puntos: se lee el bond_level
+ * que tiene hoy, se le suman los niveles y se reapunta personaje_pokemon_bond al
+ * bond de ese nivel. El tope es el más alto del catálogo (3, Incredible Bond);
+ * en la práctica no debería alcanzarse, pero se recorta por si acaso.
+ *
+ * El starter es el que lleva pokemon_tag = 'starter'.
  */
-const aplicarBonoBond = async (id_personaje, run = query) => {
-  const filas = await calcular(id_personaje, run, true)
-  for (const f of filas) {
-    if (f.extra <= 0) continue
-    await run(
-      `UPDATE ${TPP} SET personaje_pokemon_bond_points = LEAST($2, personaje_pokemon_bond_points + $3)
-        WHERE id_personaje_pokemon = $1`, [f.id, BOND_MAX, f.extra])
+const subirBondDelStarter = async (id_personaje, niveles = 2, run = query) => {
+  const { rows } = await run(
+    `SELECT pp.id_personaje_pokemon AS id, pp.pokemon_apodo AS apodo,
+            COALESCE(b.bond_level, 0) AS nivel
+       FROM ${TPP} pp
+       LEFT JOIN ${TB} b ON b.bond_id = pp.personaje_pokemon_bond
+      WHERE pp.id_personaje = $1
+        AND lower(coalesce(pp.pokemon_tag, '')) = 'starter'
+      LIMIT 1`, [id_personaje])
+  const starter = rows[0]
+  if (!starter) return null
+
+  const nuevo = Math.min(BOND_MAX, Number(starter.nivel) + niveles)
+  if (nuevo === Number(starter.nivel)) return { ...starter, nivel_nuevo: nuevo, cambio: false }
+
+  const { rows: destino } = await run(
+    `SELECT bond_id, bond_name FROM ${TB} WHERE bond_level = $1 LIMIT 1`, [nuevo])
+  if (!destino[0]) return null
+
+  await run(
+    `UPDATE ${TPP} SET personaje_pokemon_bond = $2 WHERE id_personaje_pokemon = $1`,
+    [starter.id, destino[0].bond_id])
+  await sincronizarPuntosConNivel(starter.id, run, await extraDelRasgo(id_personaje, run))
+  return {
+    id: starter.id, apodo: starter.apodo,
+    nivel: Number(starter.nivel), nivel_nuevo: nuevo,
+    nombre: destino[0].bond_name, cambio: true,
   }
-  await sincronizarBond({ id_personaje }, run)
-  return filas
 }
 
-/** Map(id_personaje_pokemon → { extra, nivel_nuevo }) para el que ya lo tiene */
+/** Map(id_personaje_pokemon → { actual, maximo, extra }) o vacío si no hay rasgo */
 const bondExtraDelPersonaje = async (id_personaje, run = query) => {
   const filas = await calcular(id_personaje, run, false)
-  return new Map(filas.map(f => [f.id, { extra: f.extra, nivel_nuevo: f.nivel_nuevo }]))
+  return new Map(filas.map(f => [f.id, { actual: f.actual, maximo: f.maximo, extra: f.extra }]))
 }
 
 /** Vista previa para la ventana de subida de nivel, antes de persistir nada */
 const previewBond = (id_personaje, run = query) => calcular(id_personaje, run, true)
 
+/** Máximo efectivo: los puntos del nivel más el extra del rasgo, si aplica */
+const maximoDeBond = async (id_personaje, id_personaje_pokemon, run = query) => {
+  const extra = await extraDelRasgo(id_personaje, run)
+  const { rows } = await run(
+    `SELECT COALESCE(pp.personaje_pokemon_bond_points, 0) AS puntos,
+            COALESCE(pp.personaje_pokemon_bond_current_points, 0) AS actual,
+            COALESCE(b.bond_level, 0) AS nivel
+       FROM ${TPP} pp LEFT JOIN ${TB} b ON b.bond_id = pp.personaje_pokemon_bond
+      WHERE pp.id_personaje_pokemon = $1 AND pp.id_personaje = $2`,
+    [id_personaje_pokemon, id_personaje])
+  if (!rows.length) return null
+  const r = rows[0]
+  return {
+    actual: Number(r.actual),
+    maximo: Number(r.puntos) + (Number(r.nivel) > 0 ? extra : 0),
+  }
+}
+
+/** Gasta puntos de vínculo. Nunca baja de 0. */
+const spendBondPoints = async (id_personaje, id_personaje_pokemon, cantidad, run = query) => {
+  const n = Math.max(1, Math.floor(Number(cantidad) || 1))
+  const cur = await maximoDeBond(id_personaje, id_personaje_pokemon, run)
+  if (!cur) return { error: 'notfound' }
+  if (cur.actual < n) return { error: 'insufficient', ...cur }
+  const actual = cur.actual - n
+  await run(`UPDATE ${TPP} SET personaje_pokemon_bond_current_points = $2 WHERE id_personaje_pokemon = $1`,
+    [id_personaje_pokemon, actual])
+  return { actual, maximo: cur.maximo }
+}
+
+/** Fija los puntos a mano (el lápiz). Se acota entre 0 y el máximo efectivo. */
+const setBondPoints = async (id_personaje, id_personaje_pokemon, valor, run = query) => {
+  const cur = await maximoDeBond(id_personaje, id_personaje_pokemon, run)
+  if (!cur) return { error: 'notfound' }
+  const actual = Math.min(Math.max(0, Math.floor(Number(valor) || 0)), cur.maximo)
+  await run(`UPDATE ${TPP} SET personaje_pokemon_bond_current_points = $2 WHERE id_personaje_pokemon = $1`,
+    [id_personaje_pokemon, actual])
+  return { actual, maximo: cur.maximo }
+}
+
 module.exports = {
   tieneBonoBond, rutaDelBonoBond, bondExtraDelPersonaje, previewBond,
-  sincronizarBond, sincronizarBondSeguro, setBondPoints, aplicarBonoBond, BOND_MIN, BOND_MAX,
+  sincronizarBond, sincronizarBondSeguro, setBondNivel, opcionesDeBond, subirBondDelStarter,
+  sincronizarPuntosConNivel, spendBondPoints, setBondPoints, extraDelRasgo, BOND_MIN, BOND_MAX,
 }

@@ -21,8 +21,9 @@
 //                               elegida para el nivel que se confirma
 const { query, transaction, SCHEMA } = require('../config/db')
 const { previewStab } = require('../lib/stab')
-const { previewBond, aplicarBonoBond, sincronizarBondSeguro } = require('../lib/bond')
+const { previewBond, subirBondDelStarter } = require('../lib/bond')
 const { hitDiceMax } = require('../lib/hitdice')
+const { maximoDeFormula, parExplicito } = require('../lib/recurso_formula')
 
 const T     = `"${SCHEMA}"."personaje"`
 const TS    = `"${SCHEMA}"."personaje_stats"`
@@ -162,10 +163,22 @@ const clasificarBono = (b) => {
     return { modo: 'resource', nombre: (b.path_bonus_resource_name || '').trim() || llave, columna: col, target }
   }
 
-  // Vínculo: se reconoce por el TARGET, no por el tipo. En el catálogo la fila
-  // de Commander es type 'resource', así que mirar solo el tipo la dejaría como
-  // narrativa.
-  if (target === 'positive_bond_pokemon') return { modo: 'bond', valor: '1', target: 'all_pokemon' }
+  // Recurso que vive en la fila de cada Pokémon, no en personaje_path_bonus.
+  // La fórmula trae "actual/maximo" y el bono alcanza a TODOS los Pokémon del
+  // entrenador, así que no hay un único contador que guardar: se lee de cada
+  // fila. Solo se persiste la marca de que el entrenador tiene el rasgo.
+  if (tipo === 'resource' && target === 'pokemon') {
+    const par = parExplicito(b.path_bonus_uses_formula)
+    if (!par) return null
+    return {
+      modo: 'resource_pokemon',
+      nombre: (b.path_bonus_resource_name || '').trim() || llave,
+      formula: String(b.path_bonus_uses_formula).trim(),
+      // Puntos extra que el rasgo suma al mostrar, cuando el vínculo es positivo
+      extra: Math.max(0, parseInt(b.path_bonus_value, 10) || 0),
+      target,
+    }
+  }
   // STAB: no pide elección. Se persiste una marca y el bono real se calcula al
   // leer, porque depende de las especializaciones, que llegan en niveles 7 y 18.
   // Tope de SR: suma permanente al máximo que da trainer_levels
@@ -184,20 +197,11 @@ const clasificarBono = (b) => {
   return { modo: 'fija', valor, llave, target }
 }
 
-// Lee de personaje la columna que nombra el bono de recurso. Devuelve null si
-// esa columna no existe, para no interpolar en el SQL algo que no se validó.
-const _columnasPersonaje = new Set()
-const valorDeColumna = async (id_personaje, columna, run = query) => {
-  if (!_columnasPersonaje.size) {
-    const { rows } = await run(
-      `SELECT column_name FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = 'personaje'`, [SCHEMA])
-    for (const r of rows) _columnasPersonaje.add(r.column_name)
-  }
-  if (!_columnasPersonaje.has(columna)) return null
-  const { rows } = await run(`SELECT "${columna}" AS v FROM ${T} WHERE id_personaje = $1`, [id_personaje])
-  return Math.max(0, Number(rows[0]?.v) || 0)
-}
+// El máximo de un recurso lo resuelve lib/recurso_formula, que entiende tanto
+// "tabla.campo" como el campo suelto de personaje y valida ambos contra el
+// esquema antes de interpolarlos.
+const valorDeColumna = (id_personaje, formula, run = query) =>
+  maximoDeFormula(formula, { id_personaje }, run)
 
 // Los bonos de un nivel que exigen elección del jugador
 const bonosAElegir = (bonos) => (bonos || [])
@@ -279,18 +283,21 @@ const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas
       n++
       continue
     }
-    if (c.modo === 'bond') {
-      // Igual que el de STAB: una marca. A quién alcanza y cuánto se resuelve
-      // en lib/bond.js al leer, porque depende del starter y del vínculo actual.
+    if (c.modo === 'resource_pokemon') {
+      // Solo se guarda la MARCA de que el entrenador tiene el rasgo: el contador
+      // vive en la fila de cada Pokémon, y son varios. En `value` viaja la
+      // fórmula para saber de qué campos leerlos, y en `target` los puntos extra
+      // que el rasgo suma al mostrarlos.
       await run(
         `INSERT INTO ${TPPB} (
            personaje_path_bonus_personaje_id, personaje_path_bonus_type,
            personaje_path_bonus_llave, personaje_path_bonus_value,
            personaje_path_bonus_target, personaje_path_bonus_level
-         ) VALUES ($1, 'bond_bonus', 'bond_bonus', '1', 'all_pokemon', $2)`,
-        [id_personaje, nivel])
-      // Suma ya los puntos a los Pokémon que cumplen y deja el nivel al día
-      await aplicarBonoBond(id_personaje, run)
+         ) VALUES ($1, 'resource_pokemon', $2, $3, $4, $5)`,
+        [id_personaje, c.nombre, c.formula, String(c.extra), nivel])
+      // Commander sube 2 niveles el vínculo del starter. No toca los puntos:
+      // mueve la FK al bond del nivel resultante, con tope en el más alto.
+      await subirBondDelStarter(id_personaje, 2, run)
       n++
       continue
     }
@@ -526,9 +533,11 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
       `UPDATE ${TPI} SET personaje_pending_improvement_applied = true
         WHERE personaje_pending_improvement_id = $1`, [pend.id])
 
-    // El nivel del entrenador puede haber movido los puntos: se revalida el
-    // vínculo de todos sus Pokémon contra la tabla bonds.
-    await sincronizarBondSeguro({ id_personaje }, (t, p) => client.query(t, p))
+    // OJO: aquí NO se revalida el vínculo contra los puntos. Con las reglas
+    // nuevas el NIVEL de vínculo y los PUNTOS son cosas distintas: el nivel lo
+    // mueve el rasgo de la ruta (y el máster a mano), y los puntos son un
+    // recurso gastable aparte. Sincronizarlos deshacía el +2 del starter en
+    // cuanto se confirmaba el nivel.
 
     return { ok: true, lvl: Number(pend.lvl), hp_roll: roll, asi, saving,
              specialization: spec?.specialization_name ?? null,
