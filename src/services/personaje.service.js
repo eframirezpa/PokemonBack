@@ -4,6 +4,7 @@ const { recalcularSeguro } = require('./trainer_level.service')
 const { stabExtraDelPersonaje } = require('../lib/stab')
 const { bondExtraDelPersonaje, rutaDelBonoBond, setBondNivel, opcionesDeBond, spendBondPoints, setBondPoints } = require('../lib/bond')
 const { coincidenciasPorPokemon } = require('../lib/especializacion')
+const { efectosDeFeats, ppExtraDe } = require('../lib/pokemon_feats')
 const { maximoOCero } = require('../lib/recurso_formula')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
@@ -565,6 +566,45 @@ const setPokemonEnJuego = async (id_personaje, id_personaje_pokemon, enJuego) =>
 }
 
 // Detalle completo de un Pokémon del personaje (tipo pokédex, con datos persistidos)
+/**
+ * Ruta del entrenador y sus recursos de tipo 'resource'.
+ *
+ * Vive aparte porque hace falta en dos sitios: la ficha del entrenador y el
+ * detalle de un Pokémon suyo, cuya pestaña de ruta muestra también los puntos
+ * del entrenador. Antes solo lo tenía la ficha, y el panel del Pokémon se
+ * quedaba en blanco si el jugador no había abierto antes el suyo.
+ */
+const rutaDelPersonaje = async (id_personaje, personaje_path) => {
+  const { rows: pathRows } = await query(
+    `SELECT * FROM "${SCHEMA}"."paths" WHERE path_id = $1`, [personaje_path])
+  const pathRow = pathRows[0] || null
+  if (pathRow) {
+    const { rows: cat } = await query(
+      `SELECT path_bonus_id AS id, path_bonus_level AS level,
+              path_bonus_key AS key, path_bonus_value AS value
+         FROM "${SCHEMA}"."path_bonus"
+        WHERE path_id = $1 ORDER BY path_bonus_level, path_bonus_id`, [pathRow.path_id])
+    pathRow.bonos_catalogo = cat
+  }
+  const { rows: recursosRows } = await query(
+    `SELECT personaje_path_bonus_id AS id,
+            personaje_path_bonus_llave  AS nombre,
+            personaje_path_bonus_value  AS columna,
+            personaje_path_bonus_target AS actual,
+            personaje_path_bonus_level  AS level
+       FROM "${SCHEMA}"."personaje_path_bonus"
+      WHERE personaje_path_bonus_personaje_id = $1
+        AND lower(personaje_path_bonus_type) = 'resource'
+      ORDER BY personaje_path_bonus_level, personaje_path_bonus_id`, [id_personaje])
+  const recursos = await Promise.all(recursosRows.map(async r => ({
+    id: Number(r.id), nombre: r.nombre, columna: r.columna,
+    actual: Math.max(0, Number(r.actual) || 0),
+    maximo: await maximoOCero(r.columna, { id_personaje }),
+    level: Number(r.level),
+  })))
+  return { path: pathRow, recursos }
+}
+
 const findPokemonDetail = async (id_personaje_pokemon) => {
   const { rows } = await query(
     `SELECT pp.*, pk.pokemon_name, pk.pokemon_type_1, pk.pokemon_type_2, pk.pokemon_sr,
@@ -691,14 +731,52 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
     extra: bondInfo.extra,
   }] : []
 
+  // Efectos de los feats que se resuelven al leer (AC, huecos de objeto, tope de
+  // movimientos, PP, bonos de ataque). Ver lib/pokemon_feats.js.
+  const efectos = efectosDeFeats(feats)
+
+  // Regla 7: los PP de más se suman al máximo y al actual de cada movimiento.
+  // Al ir aquí y no en la tabla, un movimiento que entre mañana los hereda solo.
+  for (const m of moves) {
+    const extra = ppExtraDe(efectos, m.move_name)
+    if (!extra) continue
+    // Los de PP ilimitados (Struggle, max 0) se quedan como están
+    if (Number(m.personaje_pokemon_moves_max_pp) > 0) {
+      m.personaje_pokemon_moves_max_pp     = Number(m.personaje_pokemon_moves_max_pp) + extra
+      m.personaje_pokemon_moves_current_pp = Number(m.personaje_pokemon_moves_current_pp) + extra
+      m.pp_extra_feat = extra   // para poder señalarlo en la interfaz
+    }
+  }
+
+  // Ruta del entrenador: su pestaña en el panel del Pokémon muestra también los
+  // puntos del entrenador, así que viajan aquí y no dependen de que se haya
+  // abierto antes el panel del jugador.
+  let rutaTrainer = { path: null, recursos: [] }
+  let nivelTrainer = 0
+  if (pp.id_personaje) {
+    const { rows: pr } = await query(
+      `SELECT personaje_path, personaje_level FROM ${T} WHERE id_personaje = $1`, [pp.id_personaje])
+    nivelTrainer = Number(pr[0]?.personaje_level) || 0
+    rutaTrainer = await rutaDelPersonaje(pp.id_personaje, pr[0]?.personaje_path)
+  }
+
   return {
+    trainer_path: rutaTrainer.path,
+    trainer_path_recursos: rutaTrainer.recursos,
+    trainer_path_level: nivelTrainer,   // para mostrar solo los rasgos alcanzados
     pokemon_stab_extra: stabExtra,
     pokemon_bond_extra: bondInfo?.extra || 0,
     pokemon_bond_actual: bondInfo?.actual ?? null,
     pokemon_bond_maximo: bondInfo?.maximo ?? null,
     pokemon_bond_ruta: bondRuta,
     path_recursos,
-    ...fixMedia(pp), pokemon_hp, stats, skills, moves, pasivas, exp_next, feats }
+    ...fixMedia(pp), pokemon_hp, stats, skills, moves, pasivas, exp_next, feats,
+    // DESPUÉS del spread a propósito: fixMedia(pp) trae el AC crudo de la fila y
+    // pisaría el calculado si fuera antes.
+    // Regla 1: el AC llega ya sumado, y el extra aparte para poder señalarlo.
+    personaje_pokemon_ac: (Number(pp.personaje_pokemon_ac) || 0) + efectos.ac_extra,
+    pokemon_ac_extra: efectos.ac_extra,
+    feat_efectos: efectos }
 }
 
 // Suma experiencia a un Pokémon del entrenador. Sube máximo 1 nivel y, si sube,
@@ -1217,39 +1295,9 @@ const findFullById = async (id_personaje) => {
 
   // Ruta del entrenador y los bonos que ya le otorgó. Se aplican como los de
   // feats: proficiencia o experticia en skills, según su value.
-  const { rows: pathRows } = await query(
-    `SELECT * FROM "${SCHEMA}"."paths" WHERE path_id = $1`, [personaje.personaje_path])
-  const pathRow = pathRows[0] || null
-  // Bonos del CATÁLOGO de esa ruta: los muestra la sección Clase bajo cada
-  // rasgo. Son la definición, distinta de personaje_path_bonus, que guarda lo
-  // que el personaje ya recibió.
-  if (pathRow) {
-    const { rows: cat } = await query(
-      `SELECT path_bonus_id AS id, path_bonus_level AS level,
-              path_bonus_key AS key, path_bonus_value AS value
-         FROM "${SCHEMA}"."path_bonus"
-        WHERE path_id = $1 ORDER BY path_bonus_level, path_bonus_id`, [pathRow.path_id])
-    pathRow.bonos_catalogo = cat
-  }
-  // Recursos de ruta: el máximo se recalcula de la columna que nombra `value`
-  // (personaje_level, personaje_prof...), así que crece solo al subir de nivel.
-  // En `target` viven los puntos que quedan.
-  const { rows: recursosRows } = await query(
-    `SELECT personaje_path_bonus_id AS id,
-            personaje_path_bonus_llave  AS nombre,
-            personaje_path_bonus_value  AS columna,
-            personaje_path_bonus_target AS actual,
-            personaje_path_bonus_level  AS level
-       FROM "${SCHEMA}"."personaje_path_bonus"
-      WHERE personaje_path_bonus_personaje_id = $1
-        AND lower(personaje_path_bonus_type) = 'resource'
-      ORDER BY personaje_path_bonus_level, personaje_path_bonus_id`, [id_personaje])
-  const recursos = await Promise.all(recursosRows.map(async r => ({
-    id: Number(r.id), nombre: r.nombre, columna: r.columna,
-    actual: Math.max(0, Number(r.actual) || 0),
-    maximo: await maximoOCero(r.columna, { id_personaje }),
-    level: Number(r.level),
-  })))
+  // Ruta del entrenador y sus recursos. La misma función la usa el detalle del
+  // Pokémon, cuya pestaña de ruta muestra también los puntos del entrenador.
+  const { path: pathRow, recursos } = await rutaDelPersonaje(id_personaje, personaje.personaje_path)
 
   const { rows: pathBonosRows } = await query(
     `SELECT personaje_path_bonus_id   AS id,

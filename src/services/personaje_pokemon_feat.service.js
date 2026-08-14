@@ -1,3 +1,4 @@
+const { aplicarElecciones } = require('../lib/feat_elecciones')
 const { query, transaction, SCHEMA } = require('../config/db')
 
 const TPP    = `"${SCHEMA}"."personaje_pokemon"`
@@ -58,6 +59,8 @@ const addFeat = async (id_trainer_pokemon, feat_id, bonos = []) => {
          VALUES ($1, $2, $3, $4)`,
         [pfId, b.type ?? null, b.llave ?? null, b.value ?? null])
     }
+    // Elecciones que cambian otras tablas (movimiento aprendido, pasiva oculta)
+    await aplicarElecciones(client, id_trainer_pokemon, bonos || [])
     return { personaje_pokemon_feat_id: pfId, ...feat, is_available: true, bonos: bonos || [] }
   })
 }

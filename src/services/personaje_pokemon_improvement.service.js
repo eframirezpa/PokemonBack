@@ -1,3 +1,5 @@
+const { aplicarElecciones } = require('../lib/feat_elecciones')
+const { efectosDePokemon, topeAlcanzado } = require('../lib/pokemon_feats')
 const { query, transaction, SCHEMA } = require('../config/db')
 
 const TPP     = `"${SCHEMA}"."personaje_pokemon"`
@@ -87,6 +89,8 @@ const listPending = async (id_personaje) => {
        WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1
        ORDER BY pm.personaje_pokemon_moves_id`, [p.idpp])
     item.learned_moves = learned.filter(m => m.move_id !== STRUGGLE_ID)
+    // Cuántos puede saber: 4 de base más lo que den sus feats
+    item.max_moves = (await efectosDePokemon(query, p.idpp)).known_moves_max
     const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [p.id_pokemon])
     const poolNames = pkRows[0] ? movePoolNames(pkRows[0], level) : []
     let pool = []
@@ -110,6 +114,25 @@ const listPending = async (id_personaje) => {
          FROM ${TPSK} ps JOIN ${TSKILLS} s ON s.skill_id = ps.id_skill
          WHERE ps.id_personaje_pokemon = $1 ORDER BY ps.id_pokemon_skills`, [p.idpp])
       item.skills = skills
+      // Pasivas ocultas de la especie (regla 5). Van aquí porque la elección
+      // se hace al tomar el feat, y el selector no puede consultarlas solo.
+      // Casi siempre hay una; Squawkabilly tiene dos y entonces se elige.
+      const pkRow = pkRows[0]
+      const ocultas = []
+      if (pkRow) {
+        for (const n of [1, 2, 3, 4]) {
+          if (Number(pkRow[`pokemon_ability_${n}_is_hidden`]) === 1 && pkRow[`pokemon_ability_${n}`]) {
+            ocultas.push(Number(pkRow[`pokemon_ability_${n}`]))
+          }
+        }
+      }
+      item.hidden_abilities = []
+      if (ocultas.length) {
+        const { rows: ab } = await query(
+          `SELECT ability_id, ability_name, ability_description
+             FROM "${SCHEMA}"."abilities" WHERE ability_id = ANY($1) ORDER BY ability_id`, [ocultas])
+        item.hidden_abilities = ab
+      }
       // Feats que el Pokémon ya tiene, con sus bonos: los no repetibles no deben
       // volver a ofrecerse y sus bonos de stat tienen que verse reflejados.
       const { rows: owned } = await query(
@@ -174,9 +197,13 @@ const applyHpRoll = (client, id_personaje_pokemon, roll) =>
     [roll, id_personaje_pokemon])
 
 // Valida los movimientos elegidos contra el pool del nivel. Devuelve { ids } o { error }.
-const checkMoves = async (pend, moveIdsRaw) => {
+const checkMoves = async (pend, moveIdsRaw, id_personaje_pokemon) => {
   const ids = [...new Set((moveIdsRaw || []).map(Number).filter(Boolean))].filter(id => id !== STRUGGLE_ID)
-  if (ids.length > 4) return { error: 'toomany' }
+  // El tope sale de sus feats (regla 3: Extra Move sube de 4 a 5, y otra vez a
+  // 6). El feat abre el hueco; no ata al movimiento que se eligió al tomarlo,
+  // así que en cada subida se puede recolocar el moveset entero.
+  const maxMoves = (await efectosDePokemon(query, id_personaje_pokemon)).known_moves_max
+  if (ids.length > maxMoves) return { error: 'toomany', max: maxMoves }
   const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [pend.id_pokemon])
   const poolNames = pkRows[0] ? movePoolNames(pkRows[0], Number(pend.pokemon_level) || 1) : []
   let poolIds = new Set()
@@ -207,7 +234,7 @@ const confirmMoves = async (id_personaje, id_personaje_pokemon, moveIdsRaw, hpRo
   if (!pend) return { error: 'notfound' }
   const hp = checkHpRoll(pend, hpRollRaw)
   if (hp.error) return hp
-  const mv = await checkMoves(pend, moveIdsRaw)
+  const mv = await checkMoves(pend, moveIdsRaw, id_personaje_pokemon)
   if (mv.error) return mv
   return transaction(async (client) => {
     await applyMoves(client, id_personaje_pokemon, mv.ids)
@@ -227,7 +254,7 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hp
   const hp = checkHpRoll(pend, hpRollRaw)
   if (hp.error) return hp
   // Los movimientos también se reacomodan en los niveles con ASI
-  const mv = await checkMoves(pend, moveIdsRaw)
+  const mv = await checkMoves(pend, moveIdsRaw, id_personaje_pokemon)
   if (mv.error) return mv
   const level = Number(pend.pokemon_level) || 1
   const line = await evolutionLine(pend.id_pokemon)
@@ -240,8 +267,16 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hp
   if (statSum + featCost !== points) return { error: 'points', points }
 
   if (hasFeat) {
-    const { rows: fRows } = await query(`SELECT feat_is_repeatable FROM ${TFEATS} WHERE feat_id = $1`, [Number(feat.feat_id)])
+    const { rows: fRows } = await query(
+      `SELECT f.feat_is_repeatable, COALESCE((
+          SELECT json_agg(json_build_object('type', fb.feats_bonus_type, 'limit', fb.feats_bonus_limit))
+            FROM "${SCHEMA}"."feats_bonus" fb WHERE fb.id_feat = f.feat_id), '[]') AS feat_bonuses
+         FROM ${TFEATS} f WHERE f.feat_id = $1`, [Number(feat.feat_id)])
     if (!fRows.length) return { error: 'featnotfound' }
+    // Un feat que ya llegó a su tope no aporta nada: tomarlo sería perder la
+    // mejora del nivel, así que se rechaza aquí y no solo en la interfaz.
+    const tope = topeAlcanzado(fRows[0], await efectosDePokemon(query, id_personaje_pokemon))
+    if (tope) return { error: 'featope', motivo: tope }
     // Un feat no repetible no puede asignarse dos veces al mismo Pokémon
     if (Number(fRows[0].feat_is_repeatable) !== 1) {
       const { rows: dup } = await query(
@@ -281,7 +316,16 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hp
           [pfId, b.type ?? null, b.llave ?? null, b.value ?? null])
       }
     }
+    // applyMoves BORRA el moveset entero y lo reescribe con lo que eligió el
+    // jugador en el selector, así que tiene que ir ANTES de aplicar las
+    // elecciones del feat: al revés, el movimiento que abre el feat se añadía y
+    // acto seguido lo barría este borrado.
     await applyMoves(client, id_personaje_pokemon, mv.ids)
+    if (hasFeat) {
+      // Elecciones que cambian otras tablas: el movimiento aprendido y la
+      // pasiva oculta. Dentro de la misma transacción que el feat.
+      await aplicarElecciones(client, id_personaje_pokemon, feat.bonos || [])
+    }
     await applyHpRoll(client, id_personaje_pokemon, hp.roll)
     await client.query(
       `UPDATE ${TPPI} SET personaje_pokemon_pending_improvement_applied = true

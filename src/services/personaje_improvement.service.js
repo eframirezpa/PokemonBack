@@ -34,6 +34,9 @@ const TPSB  = `"${SCHEMA}"."personaje_specializations_bonus"`
 const TPATHS = `"${SCHEMA}"."paths"`
 const TPB    = `"${SCHEMA}"."path_bonus"`
 const TPPB   = `"${SCHEMA}"."personaje_path_bonus"`
+const TFEATS = `"${SCHEMA}"."feats"`
+const TPF    = `"${SCHEMA}"."personaje_feat"`
+const TPFB   = `"${SCHEMA}"."personaje_feat_bonus"`
 
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
 const ASI_PUNTOS = 2
@@ -389,6 +392,7 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
   }
 
   let asi = null
+  let featElegido = null
   if (necesitaAsi) {
     asi = {}
     let suma = 0
@@ -396,7 +400,29 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
       const v = Math.max(0, Math.floor(Number(choices.asi?.[k]) || 0))
       asi[k] = v; suma += v
     }
-    if (suma !== ASI_PUNTOS) return { error: 'asi', puntos: ASI_PUNTOS }
+    // Un feat cuesta 2 puntos, el mismo trato que en los Pokémon: o se reparten
+    // los puntos en características, o se cambian por un rasgo.
+    const feat = choices.feat && Number(choices.feat.feat_id) ? choices.feat : null
+    const coste = feat ? ASI_PUNTOS : 0
+    if (suma + coste !== ASI_PUNTOS) return { error: 'asi', puntos: ASI_PUNTOS }
+
+    if (feat) {
+      const { rows: fr } = await query(
+        `SELECT feat_id, feat_type, feat_is_repeatable FROM ${TFEATS} WHERE feat_id = $1`,
+        [Number(feat.feat_id)])
+      if (!fr.length) return { error: 'featnotfound' }
+      // Solo los que el entrenador puede tomar en un ASI
+      if (!['origin', 'general'].includes(String(fr[0].feat_type || '').toLowerCase())) {
+        return { error: 'feattipo' }
+      }
+      if (Number(fr[0].feat_is_repeatable) !== 1) {
+        const { rows: dup } = await query(
+          `SELECT 1 FROM ${TPF} WHERE personaje_id = $1 AND feat_id = $2 LIMIT 1`,
+          [id_personaje, Number(feat.feat_id)])
+        if (dup.length) return { error: 'featduplicado' }
+      }
+      featElegido = { feat_id: Number(feat.feat_id), bonos: feat.bonos || [] }
+    }
   }
 
   let spec = null
@@ -488,6 +514,22 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
       if (sets.length) {
         params.push(id_personaje)
         await client.query(`UPDATE ${TS} SET ${sets.join(', ')} WHERE id_personaje = $${params.length}`, params)
+      }
+    }
+
+    // El feat del ASI, con sus bonos ya resueltos por el selector
+    if (featElegido) {
+      const { rows: insF } = await client.query(
+        `INSERT INTO ${TPF} (personaje_id, feat_id) VALUES ($1, $2) RETURNING personaje_feat_id`,
+        [id_personaje, featElegido.feat_id])
+      const pfId = insF[0].personaje_feat_id
+      for (const b of featElegido.bonos) {
+        await client.query(
+          `INSERT INTO ${TPFB}
+             (personaje_feat_bonus_personaje_feat_id, personaje_feat_bonus_type,
+              personaje_feat_bonus_llave, personaje_feat_bonus_value)
+           VALUES ($1, $2, $3, $4)`,
+          [pfId, b.type ?? null, b.llave ?? null, b.value ?? null])
       }
     }
 
