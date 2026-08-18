@@ -1,10 +1,12 @@
 const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
+const { esRecurso, esTerreno, MAX_TERRENO, opcionesDeTerreno, pideTerreno, proficienciaDe,
+        filasDeRecurso, filasDeTerreno, recursosDeFeats } = require('../lib/feat_recursos')
 const { recalcularSeguro } = require('./trainer_level.service')
 const { stabExtraDelPersonaje } = require('../lib/stab')
 const { bondExtraDelPersonaje, rutaDelBonoBond, setBondNivel, opcionesDeBond, spendBondPoints, setBondPoints } = require('../lib/bond')
 const { coincidenciasPorPokemon } = require('../lib/especializacion')
-const { efectosDeFeats, ppExtraDe } = require('../lib/pokemon_feats')
+const { efectosDeFeats, ppExtraDe, elementosDePokemon, esElemento, tiposDePokemon, LLAVE_ELEMENTO } = require('../lib/pokemon_feats')
 const { maximoOCero } = require('../lib/recurso_formula')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
@@ -764,6 +766,13 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
     trainer_path: rutaTrainer.path,
     trainer_path_recursos: rutaTrainer.recursos,
     trainer_path_level: nivelTrainer,   // para mostrar solo los rasgos alcanzados
+    // Bonos de elemento del Pokémon: el tipo elegido se cambia desde el panel,
+    // así que viaja con el id de su fila.
+    feat_elementos: await elementosDePokemon(query, id_personaje_pokemon),
+    // Los puntos que dan los feats del entrenador se ven también desde aquí,
+    // junto a los de su ruta. Viajan en el propio detalle para que la pestaña
+    // no dependa de haber abierto antes el panel del jugador.
+    trainer_feat_recursos: pp.id_personaje ? await recursosDeFeats(pp.id_personaje) : [],
     pokemon_stab_extra: stabExtra,
     pokemon_bond_extra: bondInfo?.extra || 0,
     pokemon_bond_actual: bondInfo?.actual ?? null,
@@ -1326,6 +1335,9 @@ const findFullById = async (id_personaje) => {
     path:            pathRow,
     path_bonos:      pathBonosRows,
     path_recursos:   recursos,
+    // Recursos gastables que dan los feats ("Lucky Points"). Van aparte de los
+    // de ruta: se pintan en otra pestaña y tienen sus propias rutas.
+    feat_recursos:   await recursosDeFeats(id_personaje),
   }
 }
 
@@ -1482,6 +1494,27 @@ const addFeat = async (id_personaje, feat_id, choices = {}) => {
 
     // Bonos sin type ni llave solo llevan un prerequisito → no se persisten
     if (!(b.type || '').trim() && !(b.llave || '').trim()) continue
+
+    // Terreno: el catálogo trae las opciones en el valor y el jugador escoge una.
+    // Lo elegido se guarda en la LLAVE y el valor pasa a ser el uso disponible,
+    // que arranca en 1. Se valida contra el catálogo: llega del cliente.
+    if (esTerreno(b.type)) {
+      const opciones = opcionesDeTerreno(b.valor)
+      const pedido = String(choices[String(i)] ?? choices[i] ?? '').trim().toLowerCase()
+      const elegido = opciones.find(o => o.toLowerCase() === pedido)
+      if (!elegido) return { error: 'terreno', opciones }
+      rowsToInsert.push({ type: 'Terrain', llave: elegido, value: '1' })
+      continue
+    }
+
+    // Recurso gastable ("Lucky Points"): la llave nombra de dónde sale el tope y
+    // el valor guardado es el ACTUAL, que arranca lleno. El valor del catálogo
+    // no se copia: siempre viene en 0 y dejaría el recurso vacío al nacer.
+    if (esRecurso(b.type)) {
+      rowsToInsert.push({ type: b.type, llave: b.llave, value: String(await proficienciaDe(id_personaje)) })
+      continue
+    }
+
     // healing / otros → copiar tal cual
     rowsToInsert.push({ type: b.type, llave: b.llave, value: b.valor })
   }
@@ -1552,6 +1585,85 @@ const setPathResource = async (id_personaje, id_bonus, actualRaw) => {
     `UPDATE ${TPPB} SET personaje_path_bonus_target = $1 WHERE personaje_path_bonus_id = $2`,
     [String(actual), id_bonus])
   return { actual, maximo }
+}
+
+// Gasta puntos de un recurso de feat. Mismas reglas que el de ruta: nunca baja
+// de 0 y el máximo se recalcula de la columna que nombra la llave.
+const filaRecursoFeat = async (id_personaje, id_bonus) => {
+  const { rows } = await query(
+    `SELECT fb.personaje_feat_bonus_type  AS tipo,
+            fb.personaje_feat_bonus_llave AS columna,
+            fb.personaje_feat_bonus_value AS actual
+       FROM ${TPFB} fb
+       JOIN ${TPF} pf ON pf.personaje_feat_id = fb.personaje_feat_bonus_personaje_feat_id
+      WHERE fb.personaje_feat_bonus_id = $1
+        AND pf.personaje_id = $2
+        AND (fb.personaje_feat_bonus_type ILIKE '%points%'
+          OR fb.personaje_feat_bonus_type ILIKE 'terrain')`, [id_bonus, id_personaje])
+  return rows[0] || null
+}
+
+// El tope: el de terreno es siempre 1, y el de puntos sale de la columna que
+// nombra su llave. En el de terreno la llave guarda el terreno elegido, no una
+// fórmula, así que resolverla daría 0 y dejaría el recurso inservible.
+const maximoDeRecursoFeat = (fila, id_personaje) =>
+  esTerreno(fila.tipo) ? MAX_TERRENO : maximoOCero(fila.columna, { id_personaje })
+
+const spendFeatResource = async (id_personaje, id_bonus, cantidad) => {
+  const n = Math.max(1, Math.floor(Number(cantidad) || 1))
+  const fila = await filaRecursoFeat(id_personaje, id_bonus)
+  if (!fila) return { error: 'notfound' }
+  const actual = Math.max(0, Number(fila.actual) || 0)
+  if (actual < n) return { error: 'insufficient', actual }
+  const nuevo = actual - n
+  await query(
+    `UPDATE ${TPFB} SET personaje_feat_bonus_value = $1 WHERE personaje_feat_bonus_id = $2`,
+    [String(nuevo), id_bonus])
+  return { actual: nuevo }
+}
+
+// Fija el valor actual (el lápiz). El máximo NO se toca: sale del personaje.
+const setFeatResource = async (id_personaje, id_bonus, actualRaw) => {
+  const fila = await filaRecursoFeat(id_personaje, id_bonus)
+  if (!fila) return { error: 'notfound' }
+  const maximo = await maximoDeRecursoFeat(fila, id_personaje)
+  const actual = Math.min(Math.max(0, Math.floor(Number(actualRaw) || 0)), maximo)
+  await query(
+    `UPDATE ${TPFB} SET personaje_feat_bonus_value = $1 WHERE personaje_feat_bonus_id = $2`,
+    [String(actual), id_bonus])
+  return { actual, maximo }
+}
+
+// Cambia el tipo elegido en un bono de elemento del Pokémon.
+//
+// Se puede cambiar cuantas veces haga falta —no es una decisión de una sola vez
+// como el resto de elecciones—, así que va por su propia ruta. El valor se
+// compara contra pokemon_types: llega del cliente.
+const setFeatElement = async (id_personaje, id_personaje_pokemon, id_bonus, valorRaw) => {
+  const { rows } = await query(
+    `SELECT b.personaje_pokemon_feat_bonus_id AS id
+       FROM "${SCHEMA}"."personaje_pokemon_feat_bonus" b
+       JOIN "${SCHEMA}"."personaje_pokemon_feat" pf
+         ON pf.personaje_pokemon_feat_id = b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id
+       JOIN ${TPP} pp ON pp.id_personaje_pokemon = pf.id_trainer_pokemon
+      WHERE b.personaje_pokemon_feat_bonus_id = $1
+        AND pf.id_trainer_pokemon = $2
+        AND pp.id_personaje = $3
+        AND b.personaje_pokemon_feat_bonus_type ILIKE 'element'`,
+    [id_bonus, id_personaje_pokemon, id_personaje])
+  if (!rows[0]) return { error: 'notfound' }
+
+  const validos = await tiposDePokemon(query)
+  const elegido = validos.find(t => t.toLowerCase() === String(valorRaw || '').trim().toLowerCase())
+  if (!elegido) return { error: 'tipo', opciones: validos }
+
+  await query(
+    `UPDATE "${SCHEMA}"."personaje_pokemon_feat_bonus"
+        SET personaje_pokemon_feat_bonus_llave = $2,
+            personaje_pokemon_feat_bonus_value = $3
+      WHERE personaje_pokemon_feat_bonus_id = $1`,
+    [id_bonus, LLAVE_ELEMENTO, elegido])
+  return { valor: elegido }
 }
 
 // ── Dados de golpe disponibles (hit_dice_left sobre hit_dice_pool) ──────────
@@ -1916,8 +2028,9 @@ const create = async (id_partida, user_id, data) => {
         WHERE p.id_personaje = $1`,
       [id_personaje]
     )
-    const daSkilled = [skRows[0]?.origin_feat_id, skRows[0]?.background_feat_id]
-      .some(id => Number(id) === FEAT_SKILLED)
+    const featsDeCuna = [skRows[0]?.origin_feat_id, skRows[0]?.background_feat_id]
+      .map(Number).filter(Boolean)
+    const daSkilled = featsDeCuna.some(id => id === FEAT_SKILLED)
     if (daSkilled) {
       // Con el client de la transacción: pedir otra conexión aquí se bloquearía
       const filas = await skilledBonusRows(data.skilled_choices, (t, p) => client.query(t, p))
@@ -1937,6 +2050,36 @@ const create = async (id_partida, user_id, data) => {
              (personaje_feat_bonus_personaje_feat_id, personaje_feat_bonus_type, personaje_feat_bonus_llave, personaje_feat_bonus_value)
            VALUES ($1, $2, $3, $4)`,
           [pfId, r.type ?? null, r.llave ?? null, r.value ?? null]
+        )
+      }
+    }
+
+    // ── 7. Recursos gastables de los feats de origen/background ───
+    // Estos feats no se guardan (los otorga el origen o el background y se leen
+    // en vivo), pero un recurso SÍ necesita fila propia: hay que poder gastarlo
+    // y reponerlo, y eso no se puede derivar. Se persiste como cualquier otro
+    // feat agregado, igual que Skilled.
+    for (const featId of featsDeCuna) {
+      if (featId === FEAT_SKILLED) continue   // ya se insertó arriba con sus elecciones
+      const run = (t, p) => client.query(t, p)
+      const puntos = await filasDeRecurso(featId, id_personaje, run)
+      // Si el feat pide terreno, la elección es obligatoria: sin ella se aborta
+      // la creación en vez de dejar el rasgo a medias, igual que con Skilled.
+      const terrenos = await filasDeTerreno(featId, data.terrain_choice, run)
+      if (terrenos.error) throw new Error('terrain_choice')
+      const filas = [...puntos, ...terrenos]
+      if (!filas.length) continue
+      const { rows: pfRows } = await client.query(
+        `INSERT INTO ${TPF} (personaje_id, feat_id) VALUES ($1, $2) RETURNING personaje_feat_id`,
+        [id_personaje, featId]
+      )
+      const pfId = pfRows[0].personaje_feat_id
+      for (const r of filas) {
+        await client.query(
+          `INSERT INTO ${TPFB}
+             (personaje_feat_bonus_personaje_feat_id, personaje_feat_bonus_type, personaje_feat_bonus_llave, personaje_feat_bonus_value)
+           VALUES ($1, $2, $3, $4)`,
+          [pfId, r.type, r.llave, r.value]
         )
       }
     }
@@ -2106,7 +2249,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
 
 module.exports = {
   updateBondPoints, bondOpciones, gastarBondPoints, fijarBondPoints,
-  spendPathResource, setPathResource,
+  spendPathResource, setPathResource, spendFeatResource, setFeatResource, setFeatElement,
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   findByPartidaUser, findParty, findById, findFullById,
   updateCombate, updatePokemonCombate,

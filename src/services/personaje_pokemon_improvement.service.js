@@ -1,5 +1,5 @@
 const { aplicarElecciones } = require('../lib/feat_elecciones')
-const { efectosDePokemon, topeAlcanzado } = require('../lib/pokemon_feats')
+const { efectosDePokemon, topeAlcanzado, sanearElementos } = require('../lib/pokemon_feats')
 const { query, transaction, SCHEMA } = require('../config/db')
 
 const TPP     = `"${SCHEMA}"."personaje_pokemon"`
@@ -307,7 +307,9 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hp
         `INSERT INTO ${TPPF} (id_trainer_pokemon, feat_id) VALUES ($1, $2) RETURNING personaje_pokemon_feat_id`,
         [id_personaje_pokemon, Number(feat.feat_id)])
       const pfId = ins[0].personaje_pokemon_feat_id
-      for (const b of (feat.bonos || [])) {
+      // El tipo elegido se valida contra la tabla, igual que en el lápiz
+      feat.bonos = await sanearElementos((t, p) => client.query(t, p), feat.bonos || [])
+      for (const b of feat.bonos) {
         await client.query(
           `INSERT INTO ${TPPFB}
              (personaje_pokemon_feat_bonus_personaje_pokemon_feat_id,

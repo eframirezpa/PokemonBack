@@ -18,6 +18,7 @@ const confirm = async (req, res, next) => {
     if (r.error === 'orden')          return res.status(409).json({ error: `Primero confirma el nivel ${r.lvl}`, lvl: r.lvl })
     if (r.error === 'hproll')         return res.status(400).json({ error: `La tirada debe estar entre 1 y ${r.max}`, max: r.max })
     if (r.error === 'asi')            return res.status(400).json({ error: `Debes repartir exactamente ${r.puntos} puntos` })
+    if (r.error === 'terreno')        return res.status(400).json({ error: 'Debes elegir un terreno para el rasgo', opciones: r.opciones })
     if (r.error === 'specialization') return res.status(400).json({ error: 'Elige una especialización que no tengas' })
     if (r.error === 'saving')         return res.status(400).json({ error: 'Elige una salvación en la que no seas proficiente' })
     if (r.error === 'path')           return res.status(400).json({ error: 'Elige una ruta válida' })

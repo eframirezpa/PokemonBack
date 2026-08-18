@@ -21,6 +21,7 @@
 //                               elegida para el nivel que se confirma
 const { query, transaction, SCHEMA } = require('../config/db')
 const { previewStab } = require('../lib/stab')
+const { esRecurso, esTerreno, filasDeRecurso, filasDeTerreno } = require('../lib/feat_recursos')
 const { previewBond, subirBondDelStarter } = require('../lib/bond')
 const { hitDiceMax } = require('../lib/hitdice')
 const { maximoDeFormula, parExplicito } = require('../lib/recurso_formula')
@@ -421,7 +422,18 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
           [id_personaje, Number(feat.feat_id)])
         if (dup.length) return { error: 'featduplicado' }
       }
-      featElegido = { feat_id: Number(feat.feat_id), bonos: feat.bonos || [] }
+      // Los bonos de recurso ("Lucky Points") los pone el servidor, no el
+      // selector: su valor inicial es la proficiencia del personaje y eso no se
+      // acepta del cliente. El resto de bonos sí vienen resueltos de la ficha,
+      // porque llevan elecciones que solo conoce el jugador.
+      const recursos = await filasDeRecurso(Number(feat.feat_id), id_personaje)
+      // El terreno SÍ lo elige el jugador, pero se revalida contra el catálogo y
+      // el uso disponible lo pone el servidor: del cliente solo se toma cuál.
+      const elegido = (feat.bonos || []).find(b => esTerreno(b.type))
+      const terrenos = await filasDeTerreno(Number(feat.feat_id), elegido?.llave)
+      if (terrenos.error) return { error: 'terreno', opciones: terrenos.opciones }
+      const delCliente = (feat.bonos || []).filter(b => !esRecurso(b.type) && !esTerreno(b.type))
+      featElegido = { feat_id: Number(feat.feat_id), bonos: [...delCliente, ...recursos, ...terrenos] }
     }
   }
 

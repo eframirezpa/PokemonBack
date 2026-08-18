@@ -147,6 +147,36 @@ const spendPathResource = async (req, res, next) => {
 }
 
 // PUT /personaje/:id/path-resource/:idb  { actual } → fija el valor (el lápiz)
+// Recursos que otorgan los feats ("Lucky Points"). Mismo contrato que los de
+// ruta, pero viven en personaje_feat_bonus.
+const spendFeatResource = async (req, res, next) => {
+  try {
+    const r = await svc.spendFeatResource(req.params.id, req.params.idb, req.body.cantidad)
+    if (r.error === 'notfound')     return res.status(404).json({ error: 'Recurso no encontrado' })
+    if (r.error === 'insufficient') return res.status(409).json({ error: 'No quedan puntos', actual: r.actual })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+const setFeatResource = async (req, res, next) => {
+  try {
+    const r = await svc.setFeatResource(req.params.id, req.params.idb, req.body.actual)
+    if (r.error === 'notfound') return res.status(404).json({ error: 'Recurso no encontrado' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+// PUT /api/personaje/:id/pokemon/:idpp/feat-element/:idb  { valor }
+// Cambia el tipo de Pokémon elegido en un bono de elemento.
+const setFeatElement = async (req, res, next) => {
+  try {
+    const r = await svc.setFeatElement(req.params.id, req.params.idpp, req.params.idb, req.body.valor)
+    if (r.error === 'notfound') return res.status(404).json({ error: 'Bono no encontrado' })
+    if (r.error === 'tipo')     return res.status(400).json({ error: 'Tipo no válido', opciones: r.opciones })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
 const setPathResource = async (req, res, next) => {
   try {
     const r = await svc.setPathResource(req.params.id, req.params.idb, req.body.actual)
@@ -270,6 +300,7 @@ const addFeat = async (req, res, next) => {
     if (result.error === 'duplicate') return res.status(409).json({ error: 'El personaje ya tiene ese rasgo' })
     if (result.error === 'choices')   return res.status(400).json({ error: 'Debes completar las elecciones del rasgo (atributos/habilidades)' })
     if (result.error === 'prereq')    return res.status(400).json({ error: 'El personaje no cumple los prerequisitos del rasgo' })
+    if (result.error === 'terreno')   return res.status(400).json({ error: 'Debes elegir un terreno', opciones: result.opciones })
     res.status(201).json(result)
   } catch (e) { next(e) }
 }
@@ -364,6 +395,10 @@ const create = async (req, res, next) => {
     if (e.message === 'skilled_choices') {
       return res.status(400).json({ error: 'Faltan las elecciones del feat Skilled' })
     }
+    // Mismo caso con el terreno del rasgo de cuna: sin elegirlo no se crea.
+    if (e.message === 'terrain_choice') {
+      return res.status(400).json({ error: 'Falta elegir el terreno del rasgo' })
+    }
     next(e)
   }
 }
@@ -433,7 +468,7 @@ module.exports = {
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
-  spendPathResource, setPathResource, updateBondPoints, getBondOpciones, spendBondPoints, setBondPoints,
+  spendPathResource, setPathResource, spendFeatResource, setFeatResource, setFeatElement, updateBondPoints, getBondOpciones, spendBondPoints, setBondPoints,
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
   renamePokemon, releasePokemon, transferPokemon, pendingRenames, spendMovePP, setMovePP,

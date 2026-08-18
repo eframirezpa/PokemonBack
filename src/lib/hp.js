@@ -24,6 +24,9 @@ function healingAtLevel(value, level) {
   return m ? Number(m[1]) * Math.max(1, Number(level) || 1) : (Number(value) || 0)
 }
 
+// El modificador de una característica, tal cual 5e.
+const conMod = con => Math.floor(((Number(con) || 0) - 10) / 2)
+
 // ── Prerequisitos de feats (nivel / stat / armor prof) ──
 function prereqMet(prereq, valor, ctx) {
   const p = norm(prereq).trim()
@@ -58,20 +61,41 @@ function buildPrereqContext(full) {
   return { level, statTotal, armorProfs }
 }
 
+// CON total del entrenador: base + bonus de la tabla + bonos de stat de sus
+// feats y especialidades. Los feats que no cumplen prerequisitos no cuentan.
+// Vive aparte porque lo necesitan el HP máximo y el descanso corto, y una
+// segunda copia de estos bucles se desincronizaría a la primera regla nueva.
+function trainerCon(full) {
+  if (!full) return 0
+  const ctx   = buildPrereqContext(full)
+  const stats = full.stats || {}
+  let statAdd = 0
+
+  for (const ef of (full.extra_feats || [])) {
+    if (!featPrereqMet(ef.prereqs, ctx)) continue
+    for (const b of (ef.bonos || [])) {
+      if (norm(b.type) === 'stat' && norm(b.llave) === 'con') statAdd += Number(b.value) || 0
+    }
+  }
+  for (const sp of (full.specializations || [])) {
+    for (const b of (sp.bonos || [])) {
+      if (norm(b.type) === 'stat' && norm(b.llave) === 'con') statAdd += Number(b.value) || 0
+    }
+  }
+  return (Number(stats.personaje_con) || 0) + (Number(stats.personaje_con_bonus) || 0) + statAdd
+}
+
 // Suma que hay que aplicar al HP guardado (máximo y actual)
 function hpExtra(full) {
   if (!full) return 0
   const ctx   = buildPrereqContext(full)
-  const stats = full.stats || {}
   const level = Math.max(1, Number(full.personaje_level) || 1)
-  let statAdd = 0, healing = 0
+  let healing = 0
 
   for (const ef of (full.extra_feats || [])) {
-    if (ctx && !featPrereqMet(ef.prereqs, ctx)) continue
+    if (!featPrereqMet(ef.prereqs, ctx)) continue
     for (const b of (ef.bonos || [])) {
-      const type = norm(b.type)
-      if (type === 'stat' && norm(b.llave) === 'con') statAdd += Number(b.value) || 0
-      else if (type === 'healing') healing += healingAtLevel(b.value, level)
+      if (norm(b.type) === 'healing') healing += healingAtLevel(b.value, level)
     }
   }
 
@@ -88,17 +112,14 @@ function hpExtra(full) {
   }
   for (const sp of (full.specializations || [])) {
     for (const b of (sp.bonos || [])) {
-      const type = norm(b.type)
-      if (type === 'stat' && norm(b.llave) === 'con') statAdd += Number(b.value) || 0
-      else if (type === 'healing') healing += Number(b.value) || 0
+      if (norm(b.type) === 'healing') healing += Number(b.value) || 0
     }
   }
 
-  const con = (Number(stats.personaje_con) || 0) + (Number(stats.personaje_con_bonus) || 0) + statAdd
   // El modificador de CON cuenta POR NIVEL, igual que en los Pokémon: en cada
   // subida se tira el dado de golpe y se suma el modificador. A nivel 1 el
   // resultado es idéntico al de antes, así que nadie ve cambiar su vida.
-  return Math.floor((con - 10) / 2) * level + healing
+  return conMod(trainerCon(full)) * level + healing
 }
 
 // Máximo efectivo = base guardada + hpExtra
@@ -141,7 +162,7 @@ function pokemonHealing(feats, level) {
 // máximo nunca queda por debajo del pokemon_hp guardado.
 function pokemonHpExtra({ stats, feats, level }) {
   const lvl = Math.max(1, Number(level) || 1)
-  const mod = Math.max(0, Math.floor((pokemonCon(stats, feats) - 10) / 2))
+  const mod = Math.max(0, conMod(pokemonCon(stats, feats)))
   return mod * lvl + pokemonHealing(feats, lvl)
 }
 
@@ -152,5 +173,5 @@ function effectivePokemonMaxHp(pp, stats, feats) {
 
 module.exports = {
   hpExtra, effectiveMaxHp, pokemonCon, pokemonHpExtra, effectivePokemonMaxHp,
-  healingBase, healingAtLevel,
+  healingBase, healingAtLevel, conMod, trainerCon,
 }

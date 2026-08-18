@@ -4,11 +4,13 @@
 //
 // LARGO: deja a los elegidos como nuevos. Cura al máximo, baja un nivel de
 //   agotamiento, limpia las muertes salvadas/falladas, devuelve todos los dados
-//   de golpe y rellena los recursos gastables (Extra Points del entrenador, PP
-//   de los movimientos del Pokémon).
+//   de golpe y rellena los recursos gastables (Extra Points de la ruta, los
+//   puntos que dan los feats como Lucky Points, y los PP de los movimientos del
+//   Pokémon).
 //
 // CORTO: lo toma UNO solo. Gasta dados de golpe y cura lo que saque la tirada,
-//   que la escribe el jugador a mano igual que en la subida de nivel.
+//   que la escribe el jugador a mano igual que en la subida de nivel, MÁS el
+//   modificador de CON por cada dado gastado.
 //
 // El HP máximo NUNCA está en la base: se calcula en vivo (modificador de CON por
 // nivel más el healing de feats). Por eso los máximos se resuelven ANTES de
@@ -16,9 +18,10 @@
 // y llamarlos dentro del callback dejaría la transacción esperando su propia
 // conexión con un pool pequeño.
 const { query, transaction, SCHEMA } = require('../config/db')
-const { effectiveMaxHp } = require('../lib/hp')
+const { effectiveMaxHp, conMod, trainerCon, pokemonCon } = require('../lib/hp')
 const { hitDiceMax } = require('../lib/hitdice')
 const { maximoOCero } = require('../lib/recurso_formula')
+const { recursosDeFeats } = require('../lib/feat_recursos')
 const { extraDelRasgo } = require('../lib/bond')
 const { findFullById, findPokemonDetail } = require('./personaje.service')
 
@@ -128,6 +131,8 @@ const longRest = async (id_personaje, { entrenador = false, pokemons = [] } = {}
     if (d) hpPokemon.set(idpp, entero(d.pokemon_hp))
   }
   const recursos = vaElEntrenador ? await maximosDeRuta(id_personaje) : []
+  // Los puntos de los feats se reponen igual que los de ruta
+  const recursosFeat = vaElEntrenador ? await recursosDeFeats(id_personaje) : []
   // El punto que suma el rasgo al pool de vínculo, si el entrenador lo tiene
   const extraBond = await extraDelRasgo(id_personaje)
 
@@ -151,8 +156,16 @@ const longRest = async (id_personaje, { entrenador = false, pokemons = [] } = {}
           `UPDATE ${TPPB} SET personaje_path_bonus_target = $2 WHERE personaje_path_bonus_id = $1`,
           [r.id, String(r.maximo)])
       }
+      // Puntos de los feats: mismo trato, otra tabla
+      for (const r of recursosFeat) {
+        await client.query(
+          `UPDATE "${SCHEMA}"."personaje_feat_bonus"
+              SET personaje_feat_bonus_value = $2
+            WHERE personaje_feat_bonus_id = $1`,
+          [r.id, String(r.maximo)])
+      }
       hecho.entrenador = true
-      hecho.recursos = recursos.length
+      hecho.recursos = recursos.length + recursosFeat.length
     }
 
     for (const idpp of propios) {
@@ -194,16 +207,23 @@ const longRest = async (id_personaje, { entrenador = false, pokemons = [] } = {}
 }
 
 // ── Descanso corto ──────────────────────────────────────────────────────────
-// Lo toma uno solo. Gasta `dados` de los disponibles y suma `resultado` al HP
-// actual sin pasar del máximo. La tirada la escribe el jugador, así que se
-// valida contra el rango posible: nunca menos de un 1 por dado ni más de la
-// cara del dado por dado.
+// Lo toma uno solo. Gasta `dados` de los disponibles y suma al HP actual la
+// tirada más el modificador de CON por cada dado, sin pasar del máximo.
+//
+// Solo se valida la TIRADA, que es lo que escribe el jugador: nunca menos de un
+// 1 por dado ni más de la cara del dado por dado. El modificador lo pone el
+// servidor a partir de las características, así que no viaja en la petición y no
+// hay nada que comprobar.
+//
+// Con un CON bajo el modificador es negativo y resta. La curación total se
+// queda en 0 como mínimo: un descanso puede no servir de nada, pero no puede
+// hacer daño.
 const shortRest = async (id_personaje, { objetivo, idpp, dados, resultado } = {}) => {
   const esPokemon = objetivo === 'pokemon'
   const n = entero(dados, 0)
   const cura = entero(resultado, 0)
 
-  let fila, maximoHp, cara, actualHp, disponibles
+  let fila, maximoHp, cara, actualHp, disponibles, modCon = 0
   if (esPokemon) {
     const { rows } = await query(
       `SELECT pokemon_hit_dice AS dado, COALESCE(pokemon_hit_dice_left, 0) AS dados,
@@ -214,6 +234,7 @@ const shortRest = async (id_personaje, { objetivo, idpp, dados, resultado } = {}
     if (!fila) return { error: 'notfound' }
     const d = await findPokemonDetail(entero(idpp))
     maximoHp = entero(d?.pokemon_hp)
+    modCon = conMod(pokemonCon(d?.stats, d?.feats))
   } else {
     const { rows } = await query(
       `SELECT personaje_hit_dice AS dado, COALESCE(personaje_hit_dice_left, 0) AS dados,
@@ -223,6 +244,7 @@ const shortRest = async (id_personaje, { objetivo, idpp, dados, resultado } = {}
     if (!fila) return { error: 'notfound' }
     const full = await findFullById(id_personaje)
     maximoHp = effectiveMaxHp(full)
+    modCon = conMod(trainerCon(full))
   }
 
   cara = hitDiceMax(fila.dado)
@@ -232,7 +254,9 @@ const shortRest = async (id_personaje, { objetivo, idpp, dados, resultado } = {}
   if (n < 1 || n > disponibles) return { error: 'dados', disponibles }
   if (cura < n || cura > n * cara) return { error: 'tirada', min: n, max: n * cara }
 
-  const hpNuevo = Math.min(actualHp + cura, maximoHp)
+  const bonoCon = modCon * n
+  const curacion = Math.max(0, cura + bonoCon)
+  const hpNuevo = Math.min(actualHp + curacion, maximoHp)
   const dadosNuevo = disponibles - n
 
   return transaction(async (client) => {
@@ -248,6 +272,9 @@ const shortRest = async (id_personaje, { objetivo, idpp, dados, resultado } = {}
     return {
       current_hp: hpNuevo, max_hp: maximoHp,
       curado: hpNuevo - actualHp, dados: dadosNuevo,
+      // Desglose, para que el panel pueda explicar el número: la tirada del
+      // jugador y lo que puso el CON.
+      tirada: cura, mod_con: modCon, bono_con: bonoCon,
     }
   })
 }

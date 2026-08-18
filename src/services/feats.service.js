@@ -47,8 +47,23 @@ const findAll = async ({ limit = 100, offset = 0, search = '', type = '' }) => {
   return { data: rows, total: Number(c[0].count) }
 }
 
+// Con sus bonos, igual que el listado. Sin ellos, quien pide un feat suelto no
+// puede saber qué elecciones exige —el terreno del rasgo, por ejemplo— y tendría
+// que traerse la lista entera para averiguarlo.
 const findById = async (id) => {
-  const { rows } = await query(`SELECT * FROM ${T} WHERE feat_id = $1`, [id])
+  const { rows } = await query(
+    `SELECT f.*, COALESCE((
+        SELECT json_agg(json_build_object(
+          'type',       fb.feats_bonus_type,
+          'llave',      fb.feats_bonus_llave,
+          'valor',      fb.feats_bonus_valor,
+          'prereq',     fb.feats_bonus_prerequisito,
+          'prereqValor', fb.feats_bonus_prerequisito_valor,
+          'limit',      fb.feats_bonus_limit
+        ) ORDER BY fb.id_feats_bonus)
+        FROM ${TFB} fb WHERE fb.id_feat = f.feat_id
+      ), '[]') AS feat_bonuses
+     FROM ${T} f WHERE f.feat_id = $1`, [id])
   return rows[0] || null
 }
 

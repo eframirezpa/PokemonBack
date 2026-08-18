@@ -41,6 +41,11 @@ router.put('/:id/pokemon/:idpp/bond-points',   authenticate, ctrl.setBondPoints)
 // Recursos que otorga la ruta (puntos gastables, tipo PP)
 router.patch('/:id/path-resource/:idb', authenticate, ctrl.spendPathResource)
 router.put('/:id/path-resource/:idb',   authenticate, ctrl.setPathResource)
+// Recursos que otorgan los feats (Lucky Points)
+router.patch('/:id/feat-resource/:idb', authenticate, ctrl.spendFeatResource)
+router.put('/:id/feat-resource/:idb',   authenticate, ctrl.setFeatResource)
+// Tipo elegido en un bono de elemento del Pokemon (Elemental Adept)
+router.put('/:id/pokemon/:idpp/feat-element/:idb', authenticate, ctrl.setFeatElement)
 
 // Dados de golpe gastables (hit_dice_left sobre hit_dice_pool), tipo PP
 router.patch('/:id/hit-dice',                authenticate, ctrl.spendHitDice)

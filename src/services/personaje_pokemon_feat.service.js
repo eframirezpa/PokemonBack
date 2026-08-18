@@ -1,4 +1,5 @@
 const { aplicarElecciones } = require('../lib/feat_elecciones')
+const { sanearElementos, esElemento } = require('../lib/pokemon_feats')
 const { query, transaction, SCHEMA } = require('../config/db')
 
 const TPP    = `"${SCHEMA}"."personaje_pokemon"`
@@ -51,7 +52,9 @@ const addFeat = async (id_trainer_pokemon, feat_id, bonos = []) => {
        RETURNING personaje_pokemon_feat_id`,
       [id_trainer_pokemon, feat_id])
     const pfId = ins[0].personaje_pokemon_feat_id
-    for (const b of (bonos || [])) {
+    // El tipo elegido se valida contra la tabla: llega del cliente
+    const filas = await sanearElementos((t, p) => client.query(t, p), bonos || [])
+    for (const b of filas) {
       await client.query(
         `INSERT INTO ${TPPFB}
            (personaje_pokemon_feat_bonus_personaje_pokemon_feat_id,
@@ -60,8 +63,8 @@ const addFeat = async (id_trainer_pokemon, feat_id, bonos = []) => {
         [pfId, b.type ?? null, b.llave ?? null, b.value ?? null])
     }
     // Elecciones que cambian otras tablas (movimiento aprendido, pasiva oculta)
-    await aplicarElecciones(client, id_trainer_pokemon, bonos || [])
-    return { personaje_pokemon_feat_id: pfId, ...feat, is_available: true, bonos: bonos || [] }
+    await aplicarElecciones(client, id_trainer_pokemon, filas)
+    return { personaje_pokemon_feat_id: pfId, ...feat, is_available: true, bonos: filas }
   })
 }
 

@@ -141,6 +141,73 @@ const efectosDeFeats = (feats = []) => {
   return r
 }
 
+// ── Bonos de elemento ────────────────────────────────────────────────────────
+// El feat deja elegir un tipo de Pokémon (Elemental Adept). El catálogo trae el
+// bono con tipo 'Element' y sin valor; lo que se guarda es la elección:
+//
+//   type  → 'Element' (el del catálogo)
+//   llave → 'Tipo'
+//   value → el nombre del tipo elegido
+//
+// A diferencia de las demás elecciones, esta se puede cambiar cuando se quiera
+// desde el propio panel, así que el valor viaja con su id de fila.
+const esElemento = (t) => String(t || '').trim().toLowerCase() === 'element'
+const LLAVE_ELEMENTO = 'Tipo'
+
+/** Los nombres de tipo válidos, tal y como están en la tabla. */
+const tiposDePokemon = async (run) => {
+  const { rows } = await run(
+    `SELECT pokemon_types_name AS nombre FROM "${SCHEMA}"."pokemon_types" ORDER BY pokemon_types_id`)
+  return rows.map(r => r.nombre).filter(Boolean)
+}
+
+/**
+ * Deja los bonos de elemento en la forma correcta antes de guardarlos.
+ *
+ * La elección llega del cliente, así que se compara contra la tabla en vez de
+ * aceptarla a ciegas; sin coincidencia se guarda vacía y el panel la pedirá.
+ * La llave se fuerza aquí para que no dependa de lo que mande el cliente.
+ */
+const sanearElementos = async (run, bonos = []) => {
+  if (!bonos.some(b => esElemento(b.type))) return bonos
+  const validos = await tiposDePokemon(run)
+  const porNombre = new Map(validos.map(t => [t.toLowerCase(), t]))
+  return bonos.map(b => esElemento(b.type)
+    ? { ...b, llave: LLAVE_ELEMENTO, value: porNombre.get(String(b.value || '').trim().toLowerCase()) || '' }
+    : b)
+}
+
+/** Los bonos de elemento de un Pokémon, para pintarlos en la pestaña Bonus. */
+const elementosDePokemon = async (run, id_personaje_pokemon) => {
+  const { rows } = await run(
+    `SELECT b.personaje_pokemon_feat_bonus_id    AS id,
+            b.personaje_pokemon_feat_bonus_type  AS tipo,
+            b.personaje_pokemon_feat_bonus_value AS valor,
+            f.feat_id, f.feat_name, f.feat_type, f.feat_prerequisite, f.feat_benefits,
+            f.feat_ability_score_increase, f.feat_is_repeatable, f.feat_notes
+       FROM "${SCHEMA}"."personaje_pokemon_feat_bonus" b
+       JOIN "${SCHEMA}"."personaje_pokemon_feat" pf
+         ON pf.personaje_pokemon_feat_id = b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id
+       JOIN "${SCHEMA}"."feats" f ON f.feat_id = pf.feat_id
+      WHERE pf.id_trainer_pokemon = $1
+        AND b.personaje_pokemon_feat_bonus_type ILIKE 'element'
+        AND COALESCE(b.personaje_pokemon_feat_bonus_is_available, TRUE)
+        AND COALESCE(pf.personaje_feat_is_available, TRUE)
+      ORDER BY b.personaje_pokemon_feat_bonus_id`, [id_personaje_pokemon])
+
+  return rows.map(r => ({
+    id: Number(r.id),
+    nombre: r.feat_name,
+    valor: r.valor || '',
+    feat: {
+      feat_id: r.feat_id, feat_name: r.feat_name, feat_type: r.feat_type,
+      feat_prerequisite: r.feat_prerequisite, feat_benefits: r.feat_benefits,
+      feat_ability_score_increase: r.feat_ability_score_increase,
+      feat_is_repeatable: r.feat_is_repeatable, feat_notes: r.feat_notes,
+    },
+  }))
+}
+
 /** PP de más que le corresponden a un movimiento concreto (regla 7) */
 const ppExtraDe = (efectos, moveName) => {
   const porNombre = efectos.pp_extra.porMovimiento[String(moveName || '').toLowerCase().trim()] || 0
@@ -192,4 +259,7 @@ const topeAlcanzado = (featCatalogo, efectos) => {
   return null
 }
 
-module.exports = { efectosDeFeats, ppExtraDe, efectosDePokemon, topeAlcanzado }
+module.exports = {
+  efectosDeFeats, ppExtraDe, efectosDePokemon, topeAlcanzado,
+  esElemento, LLAVE_ELEMENTO, tiposDePokemon, sanearElementos, elementosDePokemon,
+}
