@@ -85,6 +85,7 @@ const findPokemon = async (id_master, enEquipo = null) => {
 const findPokemonDetail = async (id_master_pokemon) => {
   const { rows } = await query(
     `SELECT mp.*, pk.pokemon_name, pk.pokemon_type_1, pk.pokemon_type_2, pk.pokemon_gender, pk.pokemon_min_level,
+            pk.pokemon_sr,
             pk.pokemon_media_main, pk.pokemon_media_main_shiny, pk.pokemon_media_sprite,
             n.nature_name, n.nature_effect_increase, n.nature_effect_increase_value,
             n.nature_effect_decrease, n.nature_effect_decrease_value,
