@@ -5,7 +5,8 @@
 // LARGO: deja a los elegidos como nuevos. Cura al máximo, baja un nivel de
 //   agotamiento, limpia las muertes salvadas/falladas, devuelve todos los dados
 //   de golpe y rellena los recursos gastables (Extra Points de la ruta, los
-//   puntos que dan los feats como Lucky Points, y los PP de los movimientos del
+//   puntos que dan los feats como Lucky Points, los usos de las features de
+//   nivel (Pokemon Tracker, Master Trainer), y los PP de los movimientos del
 //   Pokémon).
 //
 // CORTO: lo toma UNO solo. Gasta dados de golpe y cura lo que saque la tirada,
@@ -22,6 +23,7 @@ const { effectiveMaxHp, conMod, trainerCon, pokemonCon } = require('../lib/hp')
 const { hitDiceMax } = require('../lib/hitdice')
 const { maximoOCero } = require('../lib/recurso_formula')
 const { recursosDeFeats } = require('../lib/feat_recursos')
+const { reponerFeatures } = require('../lib/features_nivel')
 const { extraDelRasgo } = require('../lib/bond')
 const { findFullById, findPokemonDetail } = require('./personaje.service')
 
@@ -133,6 +135,9 @@ const longRest = async (id_personaje, { entrenador = false, pokemons = [] } = {}
   const recursos = vaElEntrenador ? await maximosDeRuta(id_personaje) : []
   // Los puntos de los feats se reponen igual que los de ruta
   const recursosFeat = vaElEntrenador ? await recursosDeFeats(id_personaje) : []
+  // El nivel decide si tiene Pokemon Tracker que reponer
+  const { rows: nv } = await query(`SELECT personaje_level FROM ${T} WHERE id_personaje = $1`, [id_personaje])
+  const nivelEntrenador = entero(nv[0]?.personaje_level)
   // El punto que suma el rasgo al pool de vínculo, si el entrenador lo tiene
   const extraBond = await extraDelRasgo(id_personaje)
 
@@ -156,6 +161,9 @@ const longRest = async (id_personaje, { entrenador = false, pokemons = [] } = {}
           `UPDATE ${TPPB} SET personaje_path_bonus_target = $2 WHERE personaje_path_bonus_id = $1`,
           [r.id, String(r.maximo)])
       }
+      // Features de nivel: sus usos vuelven con el descanso, como todo lo demás
+      await reponerFeatures((t, p) => client.query(t, p), id_personaje, nivelEntrenador)
+
       // Puntos de los feats: mismo trato, otra tabla
       for (const r of recursosFeat) {
         await client.query(

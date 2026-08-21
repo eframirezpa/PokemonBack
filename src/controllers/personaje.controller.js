@@ -1,4 +1,5 @@
 const svc = require('../services/personaje.service')
+const FEATURES = require('../lib/features_nivel')
 
 // GET /api/personaje?id_partida=123  → personajes del usuario autenticado en esa partida
 const getMine = async (req, res, next) => {
@@ -166,13 +167,23 @@ const setFeatResource = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-// PUT /api/personaje/:id/pokemon/:idpp/feat-element/:idb  { valor }
-// Cambia el tipo de Pokémon elegido en un bono de elemento.
-const setFeatElement = async (req, res, next) => {
+// PATCH /api/personaje/:id/feature/:clave  → gasta un uso
+// PUT   /api/personaje/:id/feature/:clave  → lo fija (el lápiz)
+// Van por su propia ruta porque el contador es una columna del personaje, no
+// una fila de personaje_feat_bonus como el resto de los bonos.
+const spendFeature = async (req, res, next) => {
   try {
-    const r = await svc.setFeatElement(req.params.id, req.params.idpp, req.params.idb, req.body.valor)
-    if (r.error === 'notfound') return res.status(404).json({ error: 'Bono no encontrado' })
-    if (r.error === 'tipo')     return res.status(400).json({ error: 'Tipo no válido', opciones: r.opciones })
+    const r = await FEATURES.gastarFeature(req.params.id, req.params.clave)
+    if (r.error === 'notfound')     return res.status(404).json({ error: 'No tiene esa mejora' })
+    if (r.error === 'insufficient') return res.status(409).json({ error: 'No te quedan usos', actual: r.actual })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+const setFeature = async (req, res, next) => {
+  try {
+    const r = await FEATURES.fijarFeature(req.params.id, req.params.clave, req.body.actual)
+    if (r.error === 'notfound') return res.status(404).json({ error: 'No tiene esa mejora' })
     res.json(r)
   } catch (e) { next(e) }
 }
@@ -468,7 +479,7 @@ module.exports = {
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
   getWeapon, addWeapon, updateWeaponInUse,
-  spendPathResource, setPathResource, spendFeatResource, setFeatResource, setFeatElement, updateBondPoints, getBondOpciones, spendBondPoints, setBondPoints,
+  spendPathResource, setPathResource, spendFeatResource, setFeatResource, spendFeature, setFeature, updateBondPoints, getBondOpciones, spendBondPoints, setBondPoints,
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
   renamePokemon, releasePokemon, transferPokemon, pendingRenames, spendMovePP, setMovePP,
