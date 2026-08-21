@@ -4,12 +4,13 @@ const { esRecurso, esTerreno, MAX_TERRENO, opcionesDeTerreno, pideTerreno, profi
         filasDeRecurso, filasDeTerreno, recursosDeFeats } = require('../lib/feat_recursos')
 const { recursosDeNivel } = require('../lib/features_nivel')
 const { ataqueDeRuta } = require('../lib/path_attack')
+const { statsDeRuta, aplicarAStatsPokemon } = require('../lib/path_stats')
 const { recalcularSeguro } = require('./trainer_level.service')
 const { stabExtraDelPersonaje } = require('../lib/stab')
 const { bondExtraDelPersonaje, rutaDelBonoBond, setBondNivel, opcionesDeBond, spendBondPoints, setBondPoints } = require('../lib/bond')
 const { coincidenciasPorPokemon } = require('../lib/especializacion')
 const { efectosDeFeats, ppExtraDe, elementosDePokemon } = require('../lib/pokemon_feats')
-const { maximoOCero } = require('../lib/recurso_formula')
+const { maximoOCero, maximoEnProsa } = require('../lib/recurso_formula')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -590,22 +591,59 @@ const rutaDelPersonaje = async (id_personaje, personaje_path) => {
         WHERE path_id = $1 ORDER BY path_bonus_level, path_bonus_id`, [pathRow.path_id])
     pathRow.bonos_catalogo = cat
   }
+  // Los recursos de ruta y los Battle Dice se pintan con el mismo control, así
+  // que se leen juntos. Cambian en dónde está su nombre y cómo sale el máximo:
+  // el recurso normal lo saca de la columna que nombra su value; el Battle Dice
+  // de una fórmula en prosa, y además lleva el DADO en la llave.
   const { rows: recursosRows } = await query(
     `SELECT personaje_path_bonus_id AS id,
+            personaje_path_bonus_type   AS tipo,
             personaje_path_bonus_llave  AS nombre,
             personaje_path_bonus_value  AS columna,
             personaje_path_bonus_target AS actual,
             personaje_path_bonus_level  AS level
        FROM "${SCHEMA}"."personaje_path_bonus"
       WHERE personaje_path_bonus_personaje_id = $1
-        AND lower(personaje_path_bonus_type) = 'resource'
+        AND lower(personaje_path_bonus_type) IN ('resource', 'battle dice')
       ORDER BY personaje_path_bonus_level, personaje_path_bonus_id`, [id_personaje])
-  const recursos = await Promise.all(recursosRows.map(async r => ({
-    id: Number(r.id), nombre: r.nombre, columna: r.columna,
-    actual: Math.max(0, Number(r.actual) || 0),
-    maximo: await maximoOCero(r.columna, { id_personaje }),
-    level: Number(r.level),
-  })))
+  // Texto de los Battle Dice para el popup. Sale del nivel que los INTRODUCE
+  // -el más bajo de la ruta con esa llave-, que es donde está la regla completa.
+  // No sirve el nivel guardado en la fila: al mejorar el dado ese pasa a 9 o 15,
+  // cuyo texto solo dice "ahora son d8" y da por sabido el resto.
+  let textoDados = null
+  if (pathRow) {
+    const { rows: bd } = await query(
+      `SELECT path_bonus_level AS nivel, path_bonus_notes AS notas
+         FROM "${SCHEMA}"."path_bonus"
+        WHERE path_id = $1 AND path_bonus_key = 'battle_dice'
+        ORDER BY path_bonus_level LIMIT 1`, [pathRow.path_id])
+    if (bd[0]) {
+      textoDados = pathRow[`path_level_${bd[0].nivel}_description`] || bd[0].notas || null
+    }
+  }
+
+  const recursos = await Promise.all(recursosRows.map(async r => {
+    if (String(r.tipo || '').toLowerCase() === 'battle dice') {
+      return {
+        id: Number(r.id), nombre: r.tipo, dado: r.nombre, tipo: 'battle_dice',
+        // A la derecha va el dado, no el nombre repetido: así se ve de un
+        // vistazo qué toca tirar sin abrir nada.
+        etiqueta: r.nombre,
+        // El popup de detalle reutiliza la ventana de rasgos, así que el texto
+        // viaja con la forma que ella espera.
+        feat: textoDados ? { feat_name: r.tipo, feat_benefits: textoDados } : null,
+        actual: Math.max(0, Number(r.actual) || 0),
+        maximo: (await maximoEnProsa(r.columna, id_personaje, 'minimum 1')) ?? 0,
+        level: Number(r.level),
+      }
+    }
+    return {
+      id: Number(r.id), nombre: r.nombre, columna: r.columna,
+      actual: Math.max(0, Number(r.actual) || 0),
+      maximo: await maximoOCero(r.columna, { id_personaje }),
+      level: Number(r.level),
+    }
+  }))
   return { path: pathRow, recursos }
 }
 
@@ -697,7 +735,16 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
     [id_personaje_pokemon])
   // El máximo mostrado suma el modificador de CON por cada nivel (cálculo en vivo).
   // pokemon_current_hp queda intacto: es un valor absoluto de combate.
-  const stats = statsRows[0] || null
+  // Se resuelven aquí porque hacen falta ya para el tope de las características;
+  // es una función pura sobre los feats, así que no cuesta adelantarla.
+  const efectos = efectosDeFeats(feats)
+  // El bono de característica de la ruta se suma ANTES de calcular nada: la
+  // vida, las habilidades y los modificadores salen todos de aquí, y sumarlo
+  // después dejaría cada uno con un número distinto.
+  const stats = aplicarAStatsPokemon(
+    statsRows[0] || null,
+    await statsDeRuta(pp.id_personaje, 'pokemon'),
+    { nivel: pp.pokemon_level, efectos })
   const pokemon_hp = effectivePokemonMaxHp(pp, stats, feats)
   // Mismo bono de STAB que en el listado, resuelto al leer
   const stabExtra = pp.id_personaje
@@ -737,7 +784,6 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
 
   // Efectos de los feats que se resuelven al leer (AC, huecos de objeto, tope de
   // movimientos, PP, bonos de ataque). Ver lib/pokemon_feats.js.
-  const efectos = efectosDeFeats(feats)
 
   // Regla 7: los PP de más se suman al máximo y al actual de cada movimiento.
   // Al ir aquí y no en la tabla, un movimiento que entre mañana los hereda solo.
@@ -1572,7 +1618,7 @@ const spendPathResource = async (id_personaje, id_bonus, cantidad) => {
     `SELECT personaje_path_bonus_value AS columna, personaje_path_bonus_target AS actual
        FROM ${TPPB} WHERE personaje_path_bonus_id = $1
         AND personaje_path_bonus_personaje_id = $2
-        AND lower(personaje_path_bonus_type) = 'resource'`, [id_bonus, id_personaje])
+        AND lower(personaje_path_bonus_type) IN ('resource', 'battle dice')`, [id_bonus, id_personaje])
   if (!rows[0]) return { error: 'notfound' }
   const actual = Math.max(0, Number(rows[0].actual) || 0)
   if (actual < n) return { error: 'insufficient', actual }
@@ -1589,9 +1635,11 @@ const setPathResource = async (id_personaje, id_bonus, actualRaw) => {
     `SELECT pb.personaje_path_bonus_value AS columna
        FROM ${TPPB} pb WHERE pb.personaje_path_bonus_id = $1
         AND pb.personaje_path_bonus_personaje_id = $2
-        AND lower(pb.personaje_path_bonus_type) = 'resource'`, [id_bonus, id_personaje])
+        AND lower(pb.personaje_path_bonus_type) IN ('resource', 'battle dice')`, [id_bonus, id_personaje])
   if (!rows[0]) return { error: 'notfound' }
-  const maximo = await maximoOCero(rows[0].columna, { id_personaje })
+  // El Battle Dice saca su tope de una fórmula en prosa, no de una columna
+  const maximo = (await maximoOCero(rows[0].columna, { id_personaje }))
+    || (await maximoEnProsa(rows[0].columna, id_personaje, 'minimum 1')) || 0
   const actual = Math.min(Math.max(0, Math.floor(Number(actualRaw) || 0)), maximo)
   await query(
     `UPDATE ${TPPB} SET personaje_path_bonus_target = $1 WHERE personaje_path_bonus_id = $2`,

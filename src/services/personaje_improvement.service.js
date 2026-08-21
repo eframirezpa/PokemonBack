@@ -29,7 +29,7 @@ const { previewStab } = require('../lib/stab')
 const { esRecurso, esTerreno, filasDeRecurso, filasDeTerreno } = require('../lib/feat_recursos')
 const { previewBond, subirBondDelStarter } = require('../lib/bond')
 const { hitDiceMax } = require('../lib/hitdice')
-const { maximoDeFormula, parExplicito } = require('../lib/recurso_formula')
+const { maximoDeFormula, parExplicito, maximoEnProsa } = require('../lib/recurso_formula')
 const { savingDisponibles, savingProfsDe } = require('../lib/saving_profs')
 const FEATURES = require('../lib/features_nivel')
 
@@ -227,6 +227,37 @@ const clasificarBono = (b) => {
     return { modo: 'spec_extra', cuantas: Math.max(1, Math.floor(Number(b.path_bonus_value) || 1)), target }
   }
 
+  // Característica a elegir que la ruta da a todos los Pokémon (Ace Trainer,
+  // nivel 9). Solo se atiende si el target es uno de los dos que la aplicación
+  // sabe resolver: la ruta Pokémon Breeder tiene el mismo bono para
+  // 'hatched_pokemon', que depende de algo que no llevamos.
+  if (tipo === 'ability_score_increase' && llave === 'chosen_ability_score'
+      && ['trainer', 'all_pokemon'].includes(target)) {
+    return {
+      modo: 'stat_choice',
+      valor: Math.abs(parseInt(b.path_bonus_value, 10) || 1),
+      target,
+    }
+  }
+
+  // Battle Dice: un recurso de dados. Se distingue del resto de recursos en que
+  // el rasgo no solo da puntos, sino un DADO que mejora con los niveles
+  // (d6 → d8 → d10). Por eso la llave guarda el dado y no el nombre: el nombre
+  // es siempre el mismo y va en el tipo.
+  //
+  // Su fórmula está en resource_formula y en prosa ("1 + Dex modifier"), no en
+  // uses_formula como los demás, así que no entra por la rama de abajo.
+  if (tipo === 'resource' && llave === 'battle_dice') {
+    return {
+      modo: 'battle_dice',
+      dado: String(b.path_bonus_value || '').trim(),
+      formula: String(b.path_bonus_resource_formula || '').trim(),
+      limite: String(b.path_bonus_uses_limit || '').trim(),
+      nombre: (b.path_bonus_resource_name || '').trim() || 'Battle Dice',
+      target,
+    }
+  }
+
   // Recurso del entrenador: puntos gastables. path_bonus_uses_formula nombra la
   // COLUMNA de personaje de la que sale el máximo (personaje_level, prof...).
   // Si viene vacía, la fórmula está en prosa y queda fuera por ahora.
@@ -293,7 +324,7 @@ const skillPorLlave = async (llave, run = query) => {
 // Copia a personaje_path_bonus los bonos que la ruta otorga en ese nivel.
 // Se borran antes los del mismo nivel: confirmar dos veces no debe duplicarlos,
 // y si el máster rehiciera el pendiente los deja como estaban.
-const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas = {}) => {
+const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas = {}, statDeRuta = null) => {
   const { rows } = await client.query(
     `SELECT * FROM ${TPB} WHERE path_id = $1 AND path_bonus_level = $2 ORDER BY path_bonus_id`,
     [path_id, nivel])
@@ -336,6 +367,37 @@ const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas
            personaje_path_bonus_target, personaje_path_bonus_level
          ) VALUES ($1, 'resource', $2, $3, $4, $5)`,
         [id_personaje, c.nombre, c.columna, String(maximo), nivel])
+      n++
+      continue
+    }
+    if (c.modo === 'battle_dice') {
+      // Solo hay UNA fila de Battle Dice por entrenador: los niveles 9 y 15 no
+      // dan otro recurso, mejoran el dado del que ya tiene. Por eso al
+      // reencontrarlo se actualizan el dado y el nivel, y no se inserta nada.
+      const { rows: ya } = await run(
+        `SELECT personaje_path_bonus_id AS id FROM ${TPPB}
+          WHERE personaje_path_bonus_personaje_id = $1
+            AND lower(personaje_path_bonus_type) = 'battle dice'
+          ORDER BY personaje_path_bonus_id LIMIT 1`, [id_personaje])
+      if (ya.length) {
+        await run(
+          `UPDATE ${TPPB}
+              SET personaje_path_bonus_llave = $2, personaje_path_bonus_level = $3
+            WHERE personaje_path_bonus_id = $1`, [ya[0].id, c.dado, nivel])
+        n++
+        continue
+      }
+      // La fórmula se guarda tal cual y el máximo se resuelve al leer, para que
+      // siga a la DEX del entrenador en vez de quedarse en el valor de hoy.
+      const puntos = await maximoEnProsa(c.formula, id_personaje, c.limite, run)
+      if (puntos == null) continue   // fórmula que no se entiende: se ignora
+      await run(
+        `INSERT INTO ${TPPB} (
+           personaje_path_bonus_personaje_id, personaje_path_bonus_type,
+           personaje_path_bonus_llave, personaje_path_bonus_value,
+           personaje_path_bonus_target, personaje_path_bonus_level
+         ) VALUES ($1, 'Battle Dice', $2, $3, $4, $5)`,
+        [id_personaje, c.dado, c.formula, String(puntos), nivel])
       n++
       continue
     }
@@ -391,6 +453,21 @@ const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas
       // La llave trae la skill en snake_case; se guarda con su nombre real
       const nombre = await skillPorLlave(c.llave, run)
       if (nombre) await insertar(nombre, c.valor, c.target)
+      continue
+    }
+    if (c.modo === 'stat_choice') {
+      // Se guarda con tipo 'stat' y no con el del catálogo: es lo que la ficha
+      // lee para sumarlo, y así el bono no depende de cómo se llame la feature
+      // en la ruta que lo dio.
+      if (!statDeRuta || statDeRuta.bonus_id !== b.path_bonus_id) continue
+      await run(
+        `INSERT INTO ${TPPB} (
+           personaje_path_bonus_personaje_id, personaje_path_bonus_type,
+           personaje_path_bonus_llave, personaje_path_bonus_value,
+           personaje_path_bonus_target, personaje_path_bonus_level
+         ) VALUES ($1, 'stat', $2, $3, $4, $5)`,
+        [id_personaje, statDeRuta.llave, String(statDeRuta.valor), statDeRuta.target, nivel])
+      n++
       continue
     }
     // 'elegir': una fila por cada skill que escogió el jugador
@@ -516,6 +593,19 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
     const { rows } = await query(`SELECT personaje_path FROM ${T} WHERE id_personaje = $1`, [id_personaje])
     path_id = rows[0]?.personaje_path ?? null
     if (path_id == null) return { error: 'sinpath' }
+  }
+
+  // Característica elegida para los bonos de la ruta que la piden
+  let statDeRuta = null
+  if (path_id != null && (eligePath || rasgoDePath)) {
+    const { rows: bs } = await query(
+      `SELECT * FROM ${TPB} WHERE path_id = $1 AND path_bonus_level = $2`, [path_id, Number(pend.lvl)])
+    const pide = bs.map(b => ({ b, c: clasificarBono(b) })).filter(x => x.c?.modo === 'stat_choice')
+    for (const { b, c } of pide) {
+      const elegido = norm(choices.path_stats?.[b.path_bonus_id] ?? choices.path_stats?.[String(b.path_bonus_id)])
+      if (!STAT_KEYS.includes(elegido)) return { error: 'pathstat', bonus_id: b.path_bonus_id }
+      statDeRuta = { llave: elegido, valor: c.valor, target: c.target, bonus_id: b.path_bonus_id }
+    }
   }
 
   // Skills elegidas para los bonos 'chosen_skill' de la ruta: { path_bonus_id: [nombres] }
@@ -662,7 +752,7 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
     }
     let bonos_otorgados = 0
     if (path_id != null && (eligePath || rasgoDePath)) {
-      bonos_otorgados = await otorgarBonosDePath(client, id_personaje, path_id, Number(pend.lvl), elegidas)
+      bonos_otorgados = await otorgarBonosDePath(client, id_personaje, path_id, Number(pend.lvl), elegidas, statDeRuta)
     }
 
     await client.query(

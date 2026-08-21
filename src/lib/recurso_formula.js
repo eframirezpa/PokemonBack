@@ -136,4 +136,63 @@ const parDeFormula = async (formula, ids = {}, run = query) => {
   }
 }
 
-module.exports = { maximoDeFormula, maximoOCero, partir, parExplicito, parDeFormula }
+// ── Fórmulas en prosa ────────────────────────────────────────────────────────
+//
+// Algunas fórmulas del catálogo no nombran una columna sino que están escritas
+// para leerse: "1 + Dex modifier". Se interpretan aquí porque el número tiene
+// que salir igual al alcanzar el nivel, al pintar la ficha y al descansar.
+//
+// Se admite una constante, un modificador de característica, o los dos sumados
+// o restados. Cualquier otra cosa devuelve null, y quien llama decide: es
+// preferible no dar un número a dar uno inventado.
+const STATS_PROSA = {
+  dex: 'personaje_dex', str: 'personaje_str', con: 'personaje_con',
+  int: 'personaje_int', wis: 'personaje_wis', cha: 'personaje_cha',
+}
+
+// "minimum 1" en uses_limit: el piso del resultado. Sin él, un modificador
+// negativo dejaría el recurso en cero y el rasgo sin efecto.
+const pisoDeLimite = (limite) => {
+  const m = /minimum\s+(-?\d+)/i.exec(String(limite || ''))
+  return m ? Number(m[1]) : 0
+}
+
+/**
+ * Resuelve una fórmula en prosa contra las características del personaje.
+ *
+ * @param formula  p. ej. "1 + Dex modifier"
+ * @param limite   contenido de uses_limit, para el piso ("minimum 1")
+ * @returns número, o null si la fórmula no se reconoce
+ */
+const maximoEnProsa = async (formula, id_personaje, limite = '', run = query) => {
+  const txt = String(formula || '').trim().toLowerCase()
+  if (!txt) return null
+
+  // Se parte en términos con su signo: "1 + dex modifier" → ['+1', '+dex modifier']
+  const terminos = txt.replace(/\s*([+-])\s*/g, ' $1').split(/\s+(?=[+-])|^(?=[^+-])/)
+    .map(t => t.trim()).filter(Boolean)
+
+  let stats = null
+  let total = 0
+  for (const t of terminos) {
+    const signo = t.startsWith('-') ? -1 : 1
+    const cuerpo = t.replace(/^[+-]\s*/, '').trim()
+
+    if (/^\d+$/.test(cuerpo)) { total += signo * Number(cuerpo); continue }
+
+    const m = /^([a-z]{3})\s+modifier$/.exec(cuerpo)
+    if (!m || !STATS_PROSA[m[1]]) return null   // término desconocido
+
+    if (!stats) {
+      const { rows } = await run(
+        `SELECT * FROM "${SCHEMA}"."personaje_stats" WHERE id_personaje = $1`, [id_personaje])
+      stats = rows[0] || {}
+    }
+    const col = STATS_PROSA[m[1]]
+    const valor = (Number(stats[col]) || 0) + (Number(stats[`${col}_bonus`]) || 0)
+    total += signo * Math.floor((valor - 10) / 2)
+  }
+  return Math.max(pisoDeLimite(limite), total)
+}
+
+module.exports = { maximoDeFormula, maximoOCero, partir, parExplicito, parDeFormula, maximoEnProsa, pisoDeLimite }
