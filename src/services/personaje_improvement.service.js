@@ -29,7 +29,7 @@ const { previewStab } = require('../lib/stab')
 const { esRecurso, esTerreno, filasDeRecurso, filasDeTerreno } = require('../lib/feat_recursos')
 const { previewBond, subirBondDelStarter } = require('../lib/bond')
 const { hitDiceMax } = require('../lib/hitdice')
-const { maximoDeFormula, parExplicito, maximoEnProsa } = require('../lib/recurso_formula')
+const { maximoDeFormula, parExplicito, maximoEnProsa, esRecursoDeDados } = require('../lib/recurso_formula')
 const { savingDisponibles, savingProfsDe } = require('../lib/saving_profs')
 const FEATURES = require('../lib/features_nivel')
 
@@ -240,20 +240,20 @@ const clasificarBono = (b) => {
     }
   }
 
-  // Battle Dice: un recurso de dados. Se distingue del resto de recursos en que
-  // el rasgo no solo da puntos, sino un DADO que mejora con los niveles
-  // (d6 → d8 → d10). Por eso la llave guarda el dado y no el nombre: el nombre
-  // es siempre el mismo y va en el tipo.
+  // Recurso de DADOS: el rasgo no solo da puntos, sino un dado que mejora con
+  // los niveles (d6 → d8 → d10). Battle Dice del Ace Trainer, Skill Dice del
+  // Hobbyist, y los que vengan: se reconocen por traer dado y nombre propios,
+  // no por su llave, para no tener que listarlos uno a uno.
   //
   // Su fórmula está en resource_formula y en prosa ("1 + Dex modifier"), no en
   // uses_formula como los demás, así que no entra por la rama de abajo.
-  if (tipo === 'resource' && llave === 'battle_dice') {
+  if (esRecursoDeDados(b)) {
     return {
-      modo: 'battle_dice',
+      modo: 'dice_resource',
       dado: String(b.path_bonus_value || '').trim(),
       formula: String(b.path_bonus_resource_formula || '').trim(),
       limite: String(b.path_bonus_uses_limit || '').trim(),
-      nombre: (b.path_bonus_resource_name || '').trim() || 'Battle Dice',
+      nombre: String(b.path_bonus_resource_name || '').trim(),
       target,
     }
   }
@@ -370,15 +370,16 @@ const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas
       n++
       continue
     }
-    if (c.modo === 'battle_dice') {
-      // Solo hay UNA fila de Battle Dice por entrenador: los niveles 9 y 15 no
-      // dan otro recurso, mejoran el dado del que ya tiene. Por eso al
-      // reencontrarlo se actualizan el dado y el nivel, y no se inserta nada.
+    if (c.modo === 'dice_resource') {
+      // Solo hay UNA fila por recurso y entrenador: los niveles altos no dan
+      // otro recurso, mejoran el dado del que ya tiene. Por eso al reencontrarlo
+      // se actualizan el dado y el nivel, y no se inserta nada. Se busca por
+      // NOMBRE para que dos recursos distintos no se pisen entre sí.
       const { rows: ya } = await run(
         `SELECT personaje_path_bonus_id AS id FROM ${TPPB}
           WHERE personaje_path_bonus_personaje_id = $1
-            AND lower(personaje_path_bonus_type) = 'battle dice'
-          ORDER BY personaje_path_bonus_id LIMIT 1`, [id_personaje])
+            AND lower(personaje_path_bonus_type) = lower($2)
+          ORDER BY personaje_path_bonus_id LIMIT 1`, [id_personaje, c.nombre])
       if (ya.length) {
         await run(
           `UPDATE ${TPPB}
@@ -396,8 +397,8 @@ const otorgarBonosDePath = async (client, id_personaje, path_id, nivel, elegidas
            personaje_path_bonus_personaje_id, personaje_path_bonus_type,
            personaje_path_bonus_llave, personaje_path_bonus_value,
            personaje_path_bonus_target, personaje_path_bonus_level
-         ) VALUES ($1, 'Battle Dice', $2, $3, $4, $5)`,
-        [id_personaje, c.dado, c.formula, String(puntos), nivel])
+         ) VALUES ($1, $6, $2, $3, $4, $5)`,
+        [id_personaje, c.dado, c.formula, String(puntos), nivel, c.nombre])
       n++
       continue
     }

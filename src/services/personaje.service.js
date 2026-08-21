@@ -10,7 +10,7 @@ const { stabExtraDelPersonaje } = require('../lib/stab')
 const { bondExtraDelPersonaje, rutaDelBonoBond, setBondNivel, opcionesDeBond, spendBondPoints, setBondPoints } = require('../lib/bond')
 const { coincidenciasPorPokemon } = require('../lib/especializacion')
 const { efectosDeFeats, ppExtraDe, elementosDePokemon } = require('../lib/pokemon_feats')
-const { maximoOCero, maximoEnProsa } = require('../lib/recurso_formula')
+const { maximoOCero, maximoEnProsa, esDado } = require('../lib/recurso_formula')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
 const TSK = `"${SCHEMA}"."personaje_skill"`
@@ -604,34 +604,39 @@ const rutaDelPersonaje = async (id_personaje, personaje_path) => {
             personaje_path_bonus_level  AS level
        FROM "${SCHEMA}"."personaje_path_bonus"
       WHERE personaje_path_bonus_personaje_id = $1
-        AND lower(personaje_path_bonus_type) IN ('resource', 'battle dice')
+        AND (lower(personaje_path_bonus_type) = 'resource'
+          OR personaje_path_bonus_llave ~* '^d[0-9]+$')
       ORDER BY personaje_path_bonus_level, personaje_path_bonus_id`, [id_personaje])
   // Texto de los Battle Dice para el popup. Sale del nivel que los INTRODUCE
   // -el más bajo de la ruta con esa llave-, que es donde está la regla completa.
   // No sirve el nivel guardado en la fila: al mejorar el dado ese pasa a 9 o 15,
   // cuyo texto solo dice "ahora son d8" y da por sabido el resto.
-  let textoDados = null
-  if (pathRow) {
+  // Se busca por NOMBRE del recurso, que es lo que guarda el tipo de la fila:
+  // así vale para Battle Dice, Skill Dice y cualquiera que venga después.
+  const textoDe = async (nombreRecurso) => {
+    if (!pathRow || !nombreRecurso) return null
     const { rows: bd } = await query(
       `SELECT path_bonus_level AS nivel, path_bonus_notes AS notas
          FROM "${SCHEMA}"."path_bonus"
-        WHERE path_id = $1 AND path_bonus_key = 'battle_dice'
-        ORDER BY path_bonus_level LIMIT 1`, [pathRow.path_id])
-    if (bd[0]) {
-      textoDados = pathRow[`path_level_${bd[0].nivel}_description`] || bd[0].notas || null
-    }
+        WHERE path_id = $1 AND lower(path_bonus_resource_name) = lower($2)
+        ORDER BY path_bonus_level LIMIT 1`, [pathRow.path_id, nombreRecurso])
+    if (!bd[0]) return null
+    return pathRow[`path_level_${bd[0].nivel}_description`] || bd[0].notas || null
   }
 
   const recursos = await Promise.all(recursosRows.map(async r => {
-    if (String(r.tipo || '').toLowerCase() === 'battle dice') {
+    if (esDado(r.nombre)) {
       return {
-        id: Number(r.id), nombre: r.tipo, dado: r.nombre, tipo: 'battle_dice',
+        id: Number(r.id), nombre: r.tipo, dado: r.nombre, tipo: 'dice_resource',
         // A la derecha va el dado, no el nombre repetido: así se ve de un
         // vistazo qué toca tirar sin abrir nada.
         etiqueta: r.nombre,
         // El popup de detalle reutiliza la ventana de rasgos, así que el texto
         // viaja con la forma que ella espera.
-        feat: textoDados ? { feat_name: r.tipo, feat_benefits: textoDados } : null,
+        feat: await (async () => {
+          const t = await textoDe(r.tipo)
+          return t ? { feat_name: r.tipo, feat_benefits: t } : null
+        })(),
         actual: Math.max(0, Number(r.actual) || 0),
         maximo: (await maximoEnProsa(r.columna, id_personaje, 'minimum 1')) ?? 0,
         level: Number(r.level),
@@ -1618,7 +1623,8 @@ const spendPathResource = async (id_personaje, id_bonus, cantidad) => {
     `SELECT personaje_path_bonus_value AS columna, personaje_path_bonus_target AS actual
        FROM ${TPPB} WHERE personaje_path_bonus_id = $1
         AND personaje_path_bonus_personaje_id = $2
-        AND lower(personaje_path_bonus_type) IN ('resource', 'battle dice')`, [id_bonus, id_personaje])
+        AND (lower(personaje_path_bonus_type) = 'resource'
+          OR personaje_path_bonus_llave ~* '^d[0-9]+$')`, [id_bonus, id_personaje])
   if (!rows[0]) return { error: 'notfound' }
   const actual = Math.max(0, Number(rows[0].actual) || 0)
   if (actual < n) return { error: 'insufficient', actual }
@@ -1635,7 +1641,8 @@ const setPathResource = async (id_personaje, id_bonus, actualRaw) => {
     `SELECT pb.personaje_path_bonus_value AS columna
        FROM ${TPPB} pb WHERE pb.personaje_path_bonus_id = $1
         AND pb.personaje_path_bonus_personaje_id = $2
-        AND lower(pb.personaje_path_bonus_type) IN ('resource', 'battle dice')`, [id_bonus, id_personaje])
+        AND (lower(pb.personaje_path_bonus_type) = 'resource'
+          OR pb.personaje_path_bonus_llave ~* '^d[0-9]+$')`, [id_bonus, id_personaje])
   if (!rows[0]) return { error: 'notfound' }
   // El Battle Dice saca su tope de una fórmula en prosa, no de una columna
   const maximo = (await maximoOCero(rows[0].columna, { id_personaje }))

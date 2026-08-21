@@ -21,7 +21,7 @@
 const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp, conMod, trainerCon, pokemonCon } = require('../lib/hp')
 const { hitDiceMax } = require('../lib/hitdice')
-const { maximoOCero, maximoEnProsa } = require('../lib/recurso_formula')
+const { maximoOCero, maximoEnProsa, esDado } = require('../lib/recurso_formula')
 const { recursosDeFeats } = require('../lib/feat_recursos')
 const { reponerFeatures } = require('../lib/features_nivel')
 const { extraDelRasgo } = require('../lib/bond')
@@ -79,17 +79,18 @@ const participantes = async (id_personaje) => {
 // nombra personaje_path_bonus_value. Misma regla que setPathResource.
 const maximosDeRuta = async (id_personaje) => {
   const { rows } = await query(
-    `SELECT personaje_path_bonus_id AS id, personaje_path_bonus_type AS tipo,
+    `SELECT personaje_path_bonus_id AS id, personaje_path_bonus_llave AS llave,
             personaje_path_bonus_value AS columna
        FROM ${TPPB}
       WHERE personaje_path_bonus_personaje_id = $1
-        AND lower(personaje_path_bonus_type) IN ('resource', 'battle dice')`, [id_personaje])
+        AND (lower(personaje_path_bonus_type) = 'resource'
+          OR personaje_path_bonus_llave ~* '^d[0-9]+$')`, [id_personaje])
   if (!rows.length) return []
-  // Los Battle Dice también vuelven con el descanso, pero su tope sale de una
-  // fórmula en prosa y no de una columna del personaje.
+  // Los recursos de dados también vuelven con el descanso, pero su tope sale de
+  // una fórmula en prosa y no de una columna del personaje.
   return Promise.all(rows.map(async r => ({
     id: r.id,
-    maximo: String(r.tipo || '').toLowerCase() === 'battle dice'
+    maximo: esDado(r.llave)
       ? ((await maximoEnProsa(r.columna, id_personaje, 'minimum 1')) ?? 0)
       : await maximoOCero(r.columna, { id_personaje }),
   })))

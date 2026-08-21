@@ -136,6 +136,24 @@ const parDeFormula = async (formula, ids = {}, run = query) => {
   }
 }
 
+// Recursos de DADOS de una ruta (Battle Dice del Ace Trainer, Skill Dice del
+// Hobbyist, y los que vengan). Se distinguen de los demás recursos en que el
+// rasgo no solo da puntos sino un dado que mejora con los niveles.
+//
+// En personaje_path_bonus la llave guarda el DADO, así que una fila es de este
+// tipo si su llave se parece a uno. Los recursos normales guardan ahí el nombre
+// ("Shadow Points"), que nunca puede confundirse con un dado.
+//
+// Reconocerlos por la forma del dato y no por una lista de nombres evita tener
+// que tocar código cada vez que una ruta estrene el suyo.
+const esDado = (llave) => /^d\d+$/i.test(String(llave ?? '').trim())
+
+// Lo mismo del lado del CATÁLOGO: un bono de recurso con dado y nombre propio
+const esRecursoDeDados = (bonus) =>
+  String(bonus?.path_bonus_type ?? '').trim().toLowerCase() === 'resource' &&
+  esDado(bonus?.path_bonus_value) &&
+  !!String(bonus?.path_bonus_resource_name ?? '').trim()
+
 // ── Fórmulas en prosa ────────────────────────────────────────────────────────
 //
 // Algunas fórmulas del catálogo no nombran una columna sino que están escritas
@@ -195,4 +213,7 @@ const maximoEnProsa = async (formula, id_personaje, limite = '', run = query) =>
   return Math.max(pisoDeLimite(limite), total)
 }
 
-module.exports = { maximoDeFormula, maximoOCero, partir, parExplicito, parDeFormula, maximoEnProsa, pisoDeLimite }
+module.exports = {
+  maximoDeFormula, maximoOCero, partir, parExplicito, parDeFormula,
+  maximoEnProsa, pisoDeLimite, esDado, esRecursoDeDados,
+}
