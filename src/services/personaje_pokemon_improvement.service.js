@@ -1,5 +1,5 @@
 const { aplicarElecciones } = require('../lib/feat_elecciones')
-const { efectosDePokemon, topeAlcanzado, sanearElementos } = require('../lib/pokemon_feats')
+const { efectosDePokemon, topeAlcanzado, guardarBonos, cambiarTerreno } = require('../lib/pokemon_feats')
 const { query, transaction, SCHEMA } = require('../config/db')
 
 const TPP     = `"${SCHEMA}"."personaje_pokemon"`
@@ -303,19 +303,15 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hp
       await client.query(`UPDATE ${TPS} SET ${sets.join(', ')} WHERE id_personaje_pokemon = $${params.length}`, params)
     }
     if (hasFeat) {
-      const { rows: ins } = await client.query(
-        `INSERT INTO ${TPPF} (id_trainer_pokemon, feat_id) VALUES ($1, $2) RETURNING personaje_pokemon_feat_id`,
-        [id_personaje_pokemon, Number(feat.feat_id)])
-      const pfId = ins[0].personaje_pokemon_feat_id
-      // El tipo elegido se valida contra la tabla, igual que en el lápiz
-      feat.bonos = await sanearElementos((t, p) => client.query(t, p), feat.bonos || [])
-      for (const b of feat.bonos) {
-        await client.query(
-          `INSERT INTO ${TPPFB}
-             (personaje_pokemon_feat_bonus_personaje_pokemon_feat_id,
-              personaje_pokemon_feat_bonus_type, personaje_pokemon_feat_bonus_llave, personaje_pokemon_feat_bonus_value)
-           VALUES ($1, $2, $3, $4)`,
-          [pfId, b.type ?? null, b.llave ?? null, b.value ?? null])
+      const run = (t, p) => client.query(t, p)
+      // Igual que el lápiz: retomar un feat de terreno solo cambia el terreno,
+      // y el bono de elemento se actualiza en vez de duplicarse.
+      const cambiada = await cambiarTerreno(run, id_personaje_pokemon, Number(feat.feat_id), feat.bonos || [])
+      if (!cambiada) {
+        const { rows: ins } = await client.query(
+          `INSERT INTO ${TPPF} (id_trainer_pokemon, feat_id) VALUES ($1, $2) RETURNING personaje_pokemon_feat_id`,
+          [id_personaje_pokemon, Number(feat.feat_id)])
+        feat.bonos = await guardarBonos(run, id_personaje_pokemon, ins[0].personaje_pokemon_feat_id, feat.bonos || [])
       }
     }
     // applyMoves BORRA el moveset entero y lo reescribe con lo que eligió el

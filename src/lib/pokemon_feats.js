@@ -177,6 +177,96 @@ const sanearElementos = async (run, bonos = []) => {
     : b)
 }
 
+/**
+ * Guarda los bonos de una toma del feat.
+ *
+ * Casi todos se insertan tal cual: Elemental Adept es repetible y cada toma
+ * vuelve a dar su +1 de característica, así que esas filas se acumulan.
+ *
+ * El de ELEMENTO no. El feat solo tiene un tipo elegido, y volver a tomarlo es
+ * la forma de CAMBIARLO —de ahí que el panel lo muestre de solo lectura—. Si se
+ * insertara una fila por toma, el Pokémon acabaría con varios tipos a la vez y
+ * ninguno sería "el suyo". Se actualiza el que ya tenga, sea de la toma que sea.
+ *
+ * @returns las filas tal y como quedaron, para el resto del flujo
+ */
+const esTerrenoElegido  = (b) => tipo(b) === 'terrain'
+const esAtaqueDeTerreno = (b) => tipo(b) === 'attack' && llave(b) === 'attack_roll'
+
+/** ¿Esta toma no aporta nada más que el terreno y su +N de ataque? */
+const soloTerreno = (bonos = []) =>
+  bonos.length > 0 && bonos.some(esTerrenoElegido) &&
+  bonos.every(b => esTerrenoElegido(b) || esAtaqueDeTerreno(b))
+
+/** La toma anterior de ESE feat que ya tiene terreno, si la hay. */
+const tomaPreviaDeTerreno = async (run, id_personaje_pokemon, feat_id) => {
+  const { rows } = await run(
+    `SELECT pf.personaje_pokemon_feat_id AS pf_id,
+            b.personaje_pokemon_feat_bonus_id AS bonus_id
+       FROM "${SCHEMA}"."personaje_pokemon_feat" pf
+       JOIN "${SCHEMA}"."personaje_pokemon_feat_bonus" b
+         ON b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id = pf.personaje_pokemon_feat_id
+      WHERE pf.id_trainer_pokemon = $1
+        AND pf.feat_id = $2
+        AND b.personaje_pokemon_feat_bonus_type ILIKE 'terrain'
+      ORDER BY b.personaje_pokemon_feat_bonus_id LIMIT 1`, [id_personaje_pokemon, feat_id])
+  return rows[0] || null
+}
+
+/**
+ * Volver a tomar un feat de terreno solo cambia el terreno.
+ *
+ * No se crea una toma nueva: quedaría una fila de feat sin bonos y el Pokémon
+ * mostraría el mismo rasgo repetido y vacío. Tampoco se acumula el +N: el
+ * Pokémon pelea en un sitio a la vez.
+ *
+ * @returns el id de la toma que se actualizó, o null si no era este caso
+ */
+const cambiarTerreno = async (run, id_personaje_pokemon, feat_id, bonos = []) => {
+  if (!soloTerreno(bonos)) return null
+  const previa = await tomaPreviaDeTerreno(run, id_personaje_pokemon, feat_id)
+  if (!previa) return null
+  const elegido = bonos.find(esTerrenoElegido)
+  await run(
+    `UPDATE "${SCHEMA}"."personaje_pokemon_feat_bonus"
+        SET personaje_pokemon_feat_bonus_value = $2
+      WHERE personaje_pokemon_feat_bonus_id = $1`, [previa.bonus_id, elegido.value ?? null])
+  return previa.pf_id
+}
+
+const guardarBonos = async (run, id_personaje_pokemon, pfId, bonos = []) => {
+  const filas = await sanearElementos(run, bonos)
+
+  for (const b of filas) {
+    if (esElemento(b.type)) {
+      const { rows: ya } = await run(
+        `SELECT b.personaje_pokemon_feat_bonus_id AS id
+           FROM "${SCHEMA}"."personaje_pokemon_feat_bonus" b
+           JOIN "${SCHEMA}"."personaje_pokemon_feat" pf
+             ON pf.personaje_pokemon_feat_id = b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id
+          WHERE pf.id_trainer_pokemon = $1
+            AND b.personaje_pokemon_feat_bonus_type ILIKE 'element'
+          ORDER BY b.personaje_pokemon_feat_bonus_id LIMIT 1`, [id_personaje_pokemon])
+      if (ya.length) {
+        await run(
+          `UPDATE "${SCHEMA}"."personaje_pokemon_feat_bonus"
+              SET personaje_pokemon_feat_bonus_llave = $2,
+                  personaje_pokemon_feat_bonus_value = $3
+            WHERE personaje_pokemon_feat_bonus_id = $1`,
+          [ya[0].id, LLAVE_ELEMENTO, b.value])
+        continue
+      }
+    }
+    await run(
+      `INSERT INTO "${SCHEMA}"."personaje_pokemon_feat_bonus"
+         (personaje_pokemon_feat_bonus_personaje_pokemon_feat_id,
+          personaje_pokemon_feat_bonus_type, personaje_pokemon_feat_bonus_llave, personaje_pokemon_feat_bonus_value)
+       VALUES ($1, $2, $3, $4)`,
+      [pfId, b.type ?? null, b.llave ?? null, b.value ?? null])
+  }
+  return filas
+}
+
 /** Los bonos de elemento de un Pokémon, para pintarlos en la pestaña Bonus. */
 const elementosDePokemon = async (run, id_personaje_pokemon) => {
   const { rows } = await run(
@@ -261,5 +351,6 @@ const topeAlcanzado = (featCatalogo, efectos) => {
 
 module.exports = {
   efectosDeFeats, ppExtraDe, efectosDePokemon, topeAlcanzado,
-  esElemento, LLAVE_ELEMENTO, tiposDePokemon, sanearElementos, elementosDePokemon,
+  esElemento, LLAVE_ELEMENTO, tiposDePokemon, sanearElementos, guardarBonos, elementosDePokemon,
+  cambiarTerreno,
 }

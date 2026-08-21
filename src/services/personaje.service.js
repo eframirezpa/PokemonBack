@@ -2,11 +2,13 @@ const { query, transaction, SCHEMA } = require('../config/db')
 const { effectiveMaxHp, effectivePokemonMaxHp } = require('../lib/hp')
 const { esRecurso, esTerreno, MAX_TERRENO, opcionesDeTerreno, pideTerreno, proficienciaDe,
         filasDeRecurso, filasDeTerreno, recursosDeFeats } = require('../lib/feat_recursos')
+const { recursosDeNivel } = require('../lib/features_nivel')
+const { ataqueDeRuta } = require('../lib/path_attack')
 const { recalcularSeguro } = require('./trainer_level.service')
 const { stabExtraDelPersonaje } = require('../lib/stab')
 const { bondExtraDelPersonaje, rutaDelBonoBond, setBondNivel, opcionesDeBond, spendBondPoints, setBondPoints } = require('../lib/bond')
 const { coincidenciasPorPokemon } = require('../lib/especializacion')
-const { efectosDeFeats, ppExtraDe, elementosDePokemon, esElemento, tiposDePokemon, LLAVE_ELEMENTO } = require('../lib/pokemon_feats')
+const { efectosDeFeats, ppExtraDe, elementosDePokemon } = require('../lib/pokemon_feats')
 const { maximoOCero } = require('../lib/recurso_formula')
 const T   = `"${SCHEMA}"."personaje"`
 const TS  = `"${SCHEMA}"."personaje_stats"`
@@ -766,6 +768,8 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
     trainer_path: rutaTrainer.path,
     trainer_path_recursos: rutaTrainer.recursos,
     trainer_path_level: nivelTrainer,   // para mostrar solo los rasgos alcanzados
+    // Bono de ataque que la ruta del entrenador da a TODOS sus Pokémon
+    attack_bonus_path: await ataqueDeRuta(pp.id_personaje, 'pokemon'),
     // Bonos de elemento del Pokémon: el tipo elegido se cambia desde el panel,
     // así que viaja con el id de su fila.
     feat_elementos: await elementosDePokemon(query, id_personaje_pokemon),
@@ -1335,9 +1339,17 @@ const findFullById = async (id_personaje) => {
     path:            pathRow,
     path_bonos:      pathBonosRows,
     path_recursos:   recursos,
-    // Recursos gastables que dan los feats ("Lucky Points"). Van aparte de los
-    // de ruta: se pintan en otra pestaña y tienen sus propias rutas.
-    feat_recursos:   await recursosDeFeats(id_personaje),
+    // Bonos con contador que no vienen de la ruta: los que dan los feats
+    // ("Lucky Points") y las features de nivel (Pokemon Tracker, Master
+    // Trainer), cuyo contador es una columna. El panel los pinta
+    // todos con el mismo control, así que viajan en la misma lista; cada uno
+    // dice por su `tipo` a qué ruta escribir cuando se gasta.
+    feat_recursos:   [
+      ...await recursosDeFeats(id_personaje),
+      ...await recursosDeNivel(id_personaje),
+    ],
+    // Bono de ataque que le da su ruta, para la fórmula del panel
+    attack_bonus_path: await ataqueDeRuta(id_personaje, 'trainer'),
   }
 }
 
@@ -1632,38 +1644,6 @@ const setFeatResource = async (id_personaje, id_bonus, actualRaw) => {
     `UPDATE ${TPFB} SET personaje_feat_bonus_value = $1 WHERE personaje_feat_bonus_id = $2`,
     [String(actual), id_bonus])
   return { actual, maximo }
-}
-
-// Cambia el tipo elegido en un bono de elemento del Pokémon.
-//
-// Se puede cambiar cuantas veces haga falta —no es una decisión de una sola vez
-// como el resto de elecciones—, así que va por su propia ruta. El valor se
-// compara contra pokemon_types: llega del cliente.
-const setFeatElement = async (id_personaje, id_personaje_pokemon, id_bonus, valorRaw) => {
-  const { rows } = await query(
-    `SELECT b.personaje_pokemon_feat_bonus_id AS id
-       FROM "${SCHEMA}"."personaje_pokemon_feat_bonus" b
-       JOIN "${SCHEMA}"."personaje_pokemon_feat" pf
-         ON pf.personaje_pokemon_feat_id = b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id
-       JOIN ${TPP} pp ON pp.id_personaje_pokemon = pf.id_trainer_pokemon
-      WHERE b.personaje_pokemon_feat_bonus_id = $1
-        AND pf.id_trainer_pokemon = $2
-        AND pp.id_personaje = $3
-        AND b.personaje_pokemon_feat_bonus_type ILIKE 'element'`,
-    [id_bonus, id_personaje_pokemon, id_personaje])
-  if (!rows[0]) return { error: 'notfound' }
-
-  const validos = await tiposDePokemon(query)
-  const elegido = validos.find(t => t.toLowerCase() === String(valorRaw || '').trim().toLowerCase())
-  if (!elegido) return { error: 'tipo', opciones: validos }
-
-  await query(
-    `UPDATE "${SCHEMA}"."personaje_pokemon_feat_bonus"
-        SET personaje_pokemon_feat_bonus_llave = $2,
-            personaje_pokemon_feat_bonus_value = $3
-      WHERE personaje_pokemon_feat_bonus_id = $1`,
-    [id_bonus, LLAVE_ELEMENTO, elegido])
-  return { valor: elegido }
 }
 
 // ── Dados de golpe disponibles (hit_dice_left sobre hit_dice_pool) ──────────
@@ -2249,7 +2229,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
 
 module.exports = {
   updateBondPoints, bondOpciones, gastarBondPoints, fijarBondPoints,
-  spendPathResource, setPathResource, spendFeatResource, setFeatResource, setFeatElement,
+  spendPathResource, setPathResource, spendFeatResource, setFeatResource,
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   findByPartidaUser, findParty, findById, findFullById,
   updateCombate, updatePokemonCombate,

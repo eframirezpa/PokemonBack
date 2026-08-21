@@ -1,5 +1,5 @@
 const { aplicarElecciones } = require('../lib/feat_elecciones')
-const { sanearElementos, esElemento } = require('../lib/pokemon_feats')
+const { guardarBonos, cambiarTerreno } = require('../lib/pokemon_feats')
 const { query, transaction, SCHEMA } = require('../config/db')
 
 const TPP    = `"${SCHEMA}"."personaje_pokemon"`
@@ -47,21 +47,20 @@ const addFeat = async (id_trainer_pokemon, feat_id, bonos = []) => {
     if (dup.length) return { error: 'duplicate' }
   }
   return transaction(async (client) => {
+    const run = (t, p) => client.query(t, p)
+    // Retomar un feat de terreno solo cambia el terreno: no hay toma nueva
+    const cambiada = await cambiarTerreno(run, id_trainer_pokemon, feat_id, bonos || [])
+    if (cambiada) {
+      return { personaje_pokemon_feat_id: cambiada, ...feat, is_available: true, bonos: bonos || [] }
+    }
     const { rows: ins } = await client.query(
       `INSERT INTO ${TPPF} (id_trainer_pokemon, feat_id) VALUES ($1, $2)
        RETURNING personaje_pokemon_feat_id`,
       [id_trainer_pokemon, feat_id])
     const pfId = ins[0].personaje_pokemon_feat_id
-    // El tipo elegido se valida contra la tabla: llega del cliente
-    const filas = await sanearElementos((t, p) => client.query(t, p), bonos || [])
-    for (const b of filas) {
-      await client.query(
-        `INSERT INTO ${TPPFB}
-           (personaje_pokemon_feat_bonus_personaje_pokemon_feat_id,
-            personaje_pokemon_feat_bonus_type, personaje_pokemon_feat_bonus_llave, personaje_pokemon_feat_bonus_value)
-         VALUES ($1, $2, $3, $4)`,
-        [pfId, b.type ?? null, b.llave ?? null, b.value ?? null])
-    }
+    // El tipo elegido se valida contra la tabla y el bono de elemento se
+    // actualiza en vez de duplicarse: volver a tomar el feat lo cambia.
+    const filas = await guardarBonos(run, id_trainer_pokemon, pfId, bonos || [])
     // Elecciones que cambian otras tablas (movimiento aprendido, pasiva oculta)
     await aplicarElecciones(client, id_trainer_pokemon, filas)
     return { personaje_pokemon_feat_id: pfId, ...feat, is_available: true, bonos: filas }
