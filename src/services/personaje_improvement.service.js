@@ -13,8 +13,13 @@
 //                               los niveles (igual que en los Pokémon)
 //   Control Upgrade, Pokeslot → nada: ya los aplicó trainer_level.service al
 //                               subir; aquí solo se informan
-//   Epic Boon, Master Trainer,
-//   Pokemon Tracker           → solo aviso
+//   Pokemon Tracker           → personaje.personaje_pokemon_tracker = 1, y de
+//                               paso expertise en Animal Handling (y la
+//                               proficiencia, si aún no la tenía)
+//   Master Trainer            → personaje.personaje_master_trainer = 2
+//   Epic Boon                 → personaje_feat + personaje_feat_bonus, con un
+//                               rasgo de tipo Origin, General o Epic Boon. No
+//                               cuesta puntos: es la feature del nivel.
 //   Trainer Path              → personaje.personaje_path, y de paso los bonos
 //                               que la ruta da en ese nivel
 //   Trainer Path Feature      → personaje_path_bonus, los bonos de la ruta ya
@@ -25,6 +30,8 @@ const { esRecurso, esTerreno, filasDeRecurso, filasDeTerreno } = require('../lib
 const { previewBond, subirBondDelStarter } = require('../lib/bond')
 const { hitDiceMax } = require('../lib/hitdice')
 const { maximoDeFormula, parExplicito } = require('../lib/recurso_formula')
+const { savingDisponibles, savingProfsDe } = require('../lib/saving_profs')
+const FEATURES = require('../lib/features_nivel')
 
 const T     = `"${SCHEMA}"."personaje"`
 const TS    = `"${SCHEMA}"."personaje_stats"`
@@ -46,6 +53,46 @@ const STAT_CAP = 20
 const norm = s => (s ?? '').toLowerCase().trim()
 const splitFeatures = s => (s || '').split(',').map(x => x.trim()).filter(Boolean)
 const tiene = (features, nombre) => splitFeatures(features).some(f => norm(f) === norm(nombre))
+
+// Tipos de feat que se pueden tomar en cada vía. El Epic Boon del nivel 19
+// admite además los suyos, que es lo que lo distingue del ASI.
+const TIPOS_ASI  = ['origin', 'general']
+const TIPOS_BOON = ['origin', 'general', 'epic boon']
+
+/**
+ * Valida un feat elegido y deja sus bonos listos para guardar.
+ *
+ * Lo usan el ASI y el Epic Boon: cambian en qué tipos admiten y en si cuestan
+ * puntos, pero el feat se resuelve igual en los dos, y tener dos copias de esto
+ * sería tener dos sitios donde olvidarse de un tipo de bono nuevo.
+ */
+const resolverFeatElegido = async (id_personaje, feat, tiposPermitidos) => {
+  const { rows: fr } = await query(
+    `SELECT feat_id, feat_type, feat_is_repeatable FROM ${TFEATS} WHERE feat_id = $1`,
+    [Number(feat.feat_id)])
+  if (!fr.length) return { error: 'featnotfound' }
+  if (!tiposPermitidos.includes(String(fr[0].feat_type || '').toLowerCase())) {
+    return { error: 'feattipo' }
+  }
+  if (Number(fr[0].feat_is_repeatable) !== 1) {
+    const { rows: dup } = await query(
+      `SELECT 1 FROM ${TPF} WHERE personaje_id = $1 AND feat_id = $2 LIMIT 1`,
+      [id_personaje, Number(feat.feat_id)])
+    if (dup.length) return { error: 'featduplicado' }
+  }
+  // Los bonos de recurso ("Lucky Points") los pone el servidor, no el selector:
+  // su valor inicial es la proficiencia del personaje y eso no se acepta del
+  // cliente. El resto sí vienen resueltos de la ficha, porque llevan elecciones
+  // que solo conoce el jugador.
+  const recursos = await filasDeRecurso(Number(feat.feat_id), id_personaje)
+  // El terreno SÍ lo elige el jugador, pero se revalida contra el catálogo y el
+  // uso disponible lo pone el servidor: del cliente solo se toma cuál.
+  const elegido = (feat.bonos || []).find(b => esTerreno(b.type))
+  const terrenos = await filasDeTerreno(Number(feat.feat_id), elegido?.llave)
+  if (terrenos.error) return { error: 'terreno', opciones: terrenos.opciones }
+  const delCliente = (feat.bonos || []).filter(b => !esRecurso(b.type) && !esTerreno(b.type))
+  return { feat: { feat_id: Number(feat.feat_id), bonos: [...delCliente, ...recursos, ...terrenos] } }
+}
 
 // Pendientes sin aplicar, del nivel más bajo al más alto. Cada uno viaja con lo
 // que la ventana necesita para pintarse sin más viajes.
@@ -114,6 +161,17 @@ const listPending = async (id_personaje) => {
     }
   }
 
+  // Es el mismo dato para todos los niveles pendientes, así que se resuelve una
+  // vez y no dentro del map -que además es síncrono-.
+  const disponibles = await savingDisponibles(id_personaje)
+
+  // Animal Handling: si ya es proficiente solo gana expertise; si no, las dos
+  // cosas. La ventana lo dice para que el jugador sepa qué le queda.
+  const { rows: ah } = await query(
+    `SELECT personaje_skill_pref AS prof FROM "${SCHEMA}"."personaje_skill"
+      WHERE id_personaje = $1 AND id_skill = $2`, [id_personaje, FEATURES.SKILL_ANIMAL_HANDLING])
+  const animalHandlingProf = !!ah[0]?.prof
+
   return rows.map(r => {
     const previo = porNivel.get(Number(r.lvl) - 1)
     const n = Number(r.lvl)
@@ -124,7 +182,18 @@ const listPending = async (id_personaje) => {
       pokeslots_previo: previo ? Number(previo.trainer_level_pokeslots) : null,
       // Salvaciones en las que AÚN NO es proficiente: son las que ofrece
       // Trainer's Resolve. Si ya las tiene todas, la lista llega vacía.
-      saving_disponibles: STAT_KEYS.filter(k => !st[`personaje_stats_${k}_prof`]),
+      // Cuenta también las que dan sus feats: esas no tocan las columnas de
+      // personaje_stats -se aplican al leer-, así que mirando solo la columna
+      // se ofrecía una que el entrenador ya tenía y la mejora se perdía.
+      saving_disponibles: disponibles,
+      // Features de nivel con contador (Pokemon Tracker, Master Trainer): su
+      // texto, para anunciarlas. Solo la que traiga este nivel.
+      feature_nivel: FEATURES.FEATURES
+        .filter(f => tiene(r.features, f.nombre))
+        .map(f => ({ nombre: f.nombre, texto: f.texto, usos: f.maximo })),
+      // Cambia lo que se anuncia del Tracker: si ya era proficiente en Animal
+      // Handling solo gana la expertise.
+      animal_handling_prof: animalHandlingProf,
       path_id: pathId,
       path_name: pathName,
       path_rasgo: rasgoPorNivel.get(n) ?? null,
@@ -379,6 +448,7 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
   const necesitaAsi  = tiene(pend.features, 'Ability Score Improvement')
   const necesitaSpec = tiene(pend.features, 'Specialization')
   const necesitaSav  = tiene(pend.features, "Trainer's Resolve")
+  const necesitaBoon = tiene(pend.features, 'Epic Boon')
   const eligePath    = tiene(pend.features, 'Trainer Path')
   const rasgoDePath  = tiene(pend.features, 'Trainer Path Feature')
 
@@ -394,6 +464,7 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
 
   let asi = null
   let featElegido = null
+  let boonElegido = null
   if (necesitaAsi) {
     asi = {}
     let suma = 0
@@ -408,33 +479,20 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
     if (suma + coste !== ASI_PUNTOS) return { error: 'asi', puntos: ASI_PUNTOS }
 
     if (feat) {
-      const { rows: fr } = await query(
-        `SELECT feat_id, feat_type, feat_is_repeatable FROM ${TFEATS} WHERE feat_id = $1`,
-        [Number(feat.feat_id)])
-      if (!fr.length) return { error: 'featnotfound' }
-      // Solo los que el entrenador puede tomar en un ASI
-      if (!['origin', 'general'].includes(String(fr[0].feat_type || '').toLowerCase())) {
-        return { error: 'feattipo' }
-      }
-      if (Number(fr[0].feat_is_repeatable) !== 1) {
-        const { rows: dup } = await query(
-          `SELECT 1 FROM ${TPF} WHERE personaje_id = $1 AND feat_id = $2 LIMIT 1`,
-          [id_personaje, Number(feat.feat_id)])
-        if (dup.length) return { error: 'featduplicado' }
-      }
-      // Los bonos de recurso ("Lucky Points") los pone el servidor, no el
-      // selector: su valor inicial es la proficiencia del personaje y eso no se
-      // acepta del cliente. El resto de bonos sí vienen resueltos de la ficha,
-      // porque llevan elecciones que solo conoce el jugador.
-      const recursos = await filasDeRecurso(Number(feat.feat_id), id_personaje)
-      // El terreno SÍ lo elige el jugador, pero se revalida contra el catálogo y
-      // el uso disponible lo pone el servidor: del cliente solo se toma cuál.
-      const elegido = (feat.bonos || []).find(b => esTerreno(b.type))
-      const terrenos = await filasDeTerreno(Number(feat.feat_id), elegido?.llave)
-      if (terrenos.error) return { error: 'terreno', opciones: terrenos.opciones }
-      const delCliente = (feat.bonos || []).filter(b => !esRecurso(b.type) && !esTerreno(b.type))
-      featElegido = { feat_id: Number(feat.feat_id), bonos: [...delCliente, ...recursos, ...terrenos] }
+      const r = await resolverFeatElegido(id_personaje, feat, TIPOS_ASI)
+      if (r.error) return r
+      featElegido = r.feat
     }
+  }
+
+  // Epic Boon (nivel 19): otro feat, pero NO se paga con puntos como el del ASI.
+  // Es la feature del nivel, y admite además los de tipo Epic Boon.
+  if (necesitaBoon) {
+    const feat = choices.boon && Number(choices.boon.feat_id) ? choices.boon : null
+    if (!feat) return { error: 'boon' }
+    const r = await resolverFeatElegido(id_personaje, feat, TIPOS_BOON)
+    if (r.error) return r
+    boonElegido = r.feat
   }
 
   let spec = null
@@ -501,9 +559,11 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
   if (necesitaSav) {
     saving = norm(choices.saving)
     if (!STAT_KEYS.includes(saving)) return { error: 'saving' }
-    const { rows: st } = await query(`SELECT * FROM ${TS} WHERE id_personaje = $1`, [id_personaje])
-    // Elegir una que ya tiene no otorgaría nada y desperdiciaría la mejora
-    if (st[0]?.[`personaje_stats_${saving}_prof`]) return { error: 'saving' }
+    // Elegir una que ya tiene no otorgaría nada y desperdiciaría la mejora.
+    // Misma cuenta que la lista que se ofreció: las columnas MÁS lo que dan sus
+    // feats, o el guardia rechazaría algo que la ventana sí dejaba elegir.
+    const yaTiene = await savingProfsDe(id_personaje)
+    if (yaTiene.has(saving)) return { error: 'saving' }
   }
 
   return transaction(async (client) => {
@@ -529,13 +589,14 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
       }
     }
 
-    // El feat del ASI, con sus bonos ya resueltos por el selector
-    if (featElegido) {
+    // Los feats elegidos, con sus bonos ya resueltos: el del ASI y el del Epic
+    // Boon del nivel 19. Se guardan igual, así que comparten el bloque.
+    for (const elegido of [featElegido, boonElegido].filter(Boolean)) {
       const { rows: insF } = await client.query(
         `INSERT INTO ${TPF} (personaje_id, feat_id) VALUES ($1, $2) RETURNING personaje_feat_id`,
-        [id_personaje, featElegido.feat_id])
+        [id_personaje, elegido.feat_id])
       const pfId = insF[0].personaje_feat_id
-      for (const b of featElegido.bonos) {
+      for (const b of elegido.bonos) {
         await client.query(
           `INSERT INTO ${TPFB}
              (personaje_feat_bonus_personaje_feat_id, personaje_feat_bonus_type,
@@ -570,6 +631,27 @@ const confirm = async (id_personaje, pendingId, choices = {}) => {
       await client.query(
         `UPDATE ${TS} SET personaje_stats_${saving}_prof = true WHERE id_personaje = $1`,
         [id_personaje])
+    }
+
+    // Features de nivel con contador: arrancan llenas. La columna sale de la
+    // tabla del módulo, nunca de la petición.
+    for (const f of FEATURES.FEATURES) {
+      if (!tiene(pend.features, f.nombre)) continue
+      await client.query(
+        `UPDATE ${T} SET "${f.columna}" = $2 WHERE id_personaje = $1`,
+        [id_personaje, f.maximo])
+      // El Tracker da además expertise en Animal Handling. Si no era
+      // proficiente gana también la proficiencia: sin ella la expertise no
+      // significa nada, porque duplica un bono que no tiene.
+      if (f.skill_expertise) {
+        await client.query(
+          `INSERT INTO "${SCHEMA}"."personaje_skill"
+             (id_personaje, id_skill, personaje_skill_pref, personaje_skill_expert)
+           VALUES ($1, $2, TRUE, TRUE)
+           ON CONFLICT (id_personaje, id_skill) DO UPDATE
+              SET personaje_skill_pref = TRUE, personaje_skill_expert = TRUE`,
+          [id_personaje, f.skill_expertise])
+      }
     }
 
     // Elegir la ruta guarda la ruta Y otorga el rasgo que da en ese mismo nivel:
