@@ -676,11 +676,18 @@ const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) =
        FROM ${TMPSK} k WHERE k.id_master_pokemon = $1`,
       [id_master_pokemon, nuevoId])
 
-    // ── 4. Movimientos
+    // ── 4. Movimientos. master_pokemon_moves no lleva PP -el máster no lo
+    //       necesita, sus Pokémon no gastan PP en su panel-, así que el PP se
+    //       trae del catálogo, igual que al crear un Pokémon o al reescribir su
+    //       moveset en una subida de nivel. Sin esto quedaban en 0, que el
+    //       juego lee como "PP ilimitado" para cualquier movimiento.
     await client.query(
-      `INSERT INTO ${TPPM} (personaje_pokemon_moves_personaje_pokemon_id, personaje_pokemon_moves_move_id)
-       SELECT $2, m.master_pokemon_moves_move_id
-       FROM ${TMPM} m WHERE m.master_pokemon_moves_master_pokemon_id = $1`,
+      `INSERT INTO ${TPPM} (personaje_pokemon_moves_personaje_pokemon_id, personaje_pokemon_moves_move_id,
+                            personaje_pokemon_moves_current_pp, personaje_pokemon_moves_max_pp)
+       SELECT $2, m.master_pokemon_moves_move_id, COALESCE(mv.move_pp, 0), COALESCE(mv.move_pp, 0)
+       FROM ${TMPM} m
+       JOIN ${TMOVES} mv ON mv.move_id = m.master_pokemon_moves_move_id
+       WHERE m.master_pokemon_moves_master_pokemon_id = $1`,
       [id_master_pokemon, nuevoId])
 
     // ── 5. Pasivas
