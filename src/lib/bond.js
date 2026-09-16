@@ -13,7 +13,10 @@
 //   se persiste, pero no en los puntos: se reapunta personaje_pokemon_bond al
 //   bond del nivel resultante. Ver subirBondDelStarter.
 //
-// Sin el rasgo, los bond points no existen para ese entrenador y no se muestran.
+// Los bond points son universales: TODO Pokémon con vínculo positivo tiene su
+// pool, tenga o no su entrenador el rasgo de Commander. Lo que da Commander es
+// el +1 EXTRA por Pokémon y el salto de 2 niveles del starter -eso sí sigue
+// exclusivo del rasgo-, no la mecánica en sí.
 //
 // TOPE: bonds llega hasta el nivel 3 (Incredible Bond) y baja hasta -3.
 const { query, SCHEMA } = require('../config/db')
@@ -176,17 +179,18 @@ const tieneBonoBond = async (id_personaje, run = query) => {
   return rows.length > 0
 }
 
-// Bond points de cada Pokémon del entrenador, ya con el punto extra del rasgo.
-//
-// Solo existen si el entrenador tiene el rasgo: sin él se devuelve un mapa
-// vacío y la interfaz no muestra nada. El +1 se suma al vuelo a los dos valores
-// cuando el vínculo del Pokémon es positivo, y nunca se guarda.
+// Bond points de cada Pokémon del entrenador. Existen siempre -son la mecánica
+// base-, y si el entrenador tiene el rasgo de Commander, los de vínculo
+// positivo suman +1 a los dos valores. Ese +1 no se guarda: se suma al vuelo,
+// para que aparezca y desaparezca con el rasgo sin dejar un número obsoleto.
 //
 // `soloPreview` omite la comprobación del rasgo, para anticiparlo en la ventana
 // de subida de nivel.
 const calcular = async (id_personaje, run, soloPreview = false) => {
+  // El rasgo ya NO decide si esta lista existe -eso sería esconder puntos que
+  // ya están en la base-, solo cuánto EXTRA se suma. Sin el rasgo, extra queda
+  // en 0 y las filas se arman igual, con el máximo base de cada uno.
   const extra = soloPreview ? EXTRA_DEL_RASGO : await extraDelRasgo(id_personaje, run)
-  if (!extra && !soloPreview) return []
 
   const { rows } = await run(
     `SELECT pp.id_personaje_pokemon                        AS id,
@@ -206,7 +210,7 @@ const calcular = async (id_personaje, run, soloPreview = false) => {
     // El punto del rasgo entra en el POOL: amplía el máximo y se gasta como
     // cualquier otro. Solo lo reciben los de vínculo positivo. El actual va tal
     // cual está guardado, porque ya incluye ese punto tras reponerse.
-    const suma = Number(r.nivel) > 0 ? (extra || EXTRA_DEL_RASGO) : 0
+    const suma = Number(r.nivel) > 0 ? extra : 0
     return {
       id: Number(r.id), apodo: r.apodo,
       nivel: Number(r.nivel), nombre: r.nombre,
