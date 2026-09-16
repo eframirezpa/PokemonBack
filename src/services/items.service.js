@@ -42,4 +42,27 @@ const findById = async (id) => {
   return rows[0] || null
 }
 
-module.exports = { findAll, findById }
+/**
+ * Crea un item nuevo (lo usa el máster desde la mochila de la partida).
+ *
+ * item_id no sale de la secuencia de la tabla: quedó desincronizada de los
+ * ids reales hace tiempo (bulk-load con ids explícitos), así que el máximo
+ * actual se calcula en el mismo INSERT, no antes -así no hay hueco entre
+ * "calcular" y "guardar" donde otro item se cuele con el mismo id-.
+ */
+const create = async ({ item_name, item_type, item_cost, item_description }) => {
+  const item_name_id = item_name.trim().toLowerCase().replace(/\s+/g, '-')
+  const { rows } = await query(
+    `INSERT INTO ${T} (
+       item_id, item_name_id, item_name, item_type, item_cost,
+       item_description, item_media_sprite, item_notes, item_last_updated
+     )
+     SELECT COALESCE(MAX(item_id), 0) + 1, $1, $2, $3, $4, $5, NULL, NULL, now()::text
+       FROM ${T}
+     RETURNING *`,
+    [item_name_id, item_name, item_type, item_cost, item_description]
+  )
+  return rows[0]
+}
+
+module.exports = { findAll, findById, create }
