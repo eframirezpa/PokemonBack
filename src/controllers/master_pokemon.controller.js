@@ -35,11 +35,11 @@ const getPokemonDetail = async (req, res, next) => {
 const addPokemon = async (req, res, next) => {
   try {
     const { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie,
-            type_1, type_2, hp, stats, skills, level, proficiency, experiencia, feats } = req.body
+            type_1, type_2, hp, stats, skills, level, proficiency, experiencia, feats, held_item_id } = req.body
     if (!id_pokemon) return res.status(400).json({ error: 'id_pokemon requerido' })
     const created = await svc.addPokemon(req.user.user_id, {
       id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie,
-      type_1, type_2, hp, stats, skills, level, proficiency, experiencia, feats,
+      type_1, type_2, hp, stats, skills, level, proficiency, experiencia, feats, held_item_id,
     })
     if (!created) return res.status(404).json({ error: 'Pokémon no encontrado' })
     res.status(201).json(created)
@@ -76,9 +76,9 @@ const updatePokemonEnJuego = async (req, res, next) => {
 // PATCH /api/master/pokemon/:idmp → edita los campos del Pokémon del master
 const updatePokemon = async (req, res, next) => {
   try {
-    const { apodo, genero, id_nature, type_1, type_2, hp, stats, skills, move_ids, id_abilitie, feats } = req.body
+    const { apodo, genero, id_nature, type_1, type_2, hp, stats, skills, move_ids, id_abilitie, feats, held_item_id } = req.body
     const updated = await svc.updatePokemon(req.user.user_id, req.params.idmp, {
-      apodo, genero, id_nature, type_1, type_2, hp, stats, skills, move_ids, id_abilitie, feats,
+      apodo, genero, id_nature, type_1, type_2, hp, stats, skills, move_ids, id_abilitie, feats, held_item_id,
     })
     if (!updated) return res.status(404).json({ error: 'Pokémon no encontrado' })
     res.json(updated)

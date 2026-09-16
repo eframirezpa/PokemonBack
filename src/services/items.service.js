@@ -10,8 +10,11 @@ const findAll = async ({ limit = 20, offset = 0, search = '', type = '', exclude
     conditions.push(`item_name ILIKE $${params.length}`)
   }
   if (type) {
-    params.push(type)
-    conditions.push(`item_type = $${params.length}`)
+    // "held item,berry" → cualquiera de los dos. Sigue aceptando un solo
+    // valor tal cual, así que no rompe a nadie que ya llame con uno solo.
+    const tipos = type.split(',').map(t => t.trim()).filter(Boolean)
+    params.push(tipos)
+    conditions.push(`item_type = ANY($${params.length})`)
   }
   if (excludeType) {
     params.push(excludeType)

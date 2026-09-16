@@ -21,6 +21,7 @@ const TBONDS   = `"${SCHEMA}"."bonds"`
 const TLEVELS  = `"${SCHEMA}"."pokemon_levels"`
 const TEXP     = `"${SCHEMA}"."pokemon_experience_levels"`
 const TEVO     = `"${SCHEMA}"."evolution"`
+const TITEM    = `"${SCHEMA}"."items"`
 
 const STAT_KEYS = ['dex', 'str', 'con', 'int', 'wis', 'cha']
 const STRUGGLE_ID = 705
@@ -89,11 +90,14 @@ const findPokemonDetail = async (id_master_pokemon) => {
             pk.pokemon_media_main, pk.pokemon_media_main_shiny, pk.pokemon_media_sprite,
             n.nature_name, n.nature_effect_increase, n.nature_effect_increase_value,
             n.nature_effect_decrease, n.nature_effect_decrease_value,
-            b.bond_name, b.bond_description
+            b.bond_name, b.bond_description,
+            hi.item_name AS held_item_name, hi.item_type AS held_item_type,
+            hi.item_media_sprite AS held_item_sprite
      FROM ${TMP} mp
      JOIN ${TPOKEDEX} pk ON pk.pokemon_id = mp.id_pokemon
      LEFT JOIN ${TNAT} n ON n.nature_id = mp.personaje_pokemon_nature
      LEFT JOIN ${TBONDS} b ON b.bond_id = mp.personaje_pokemon_bond
+     LEFT JOIN ${TITEM} hi ON hi.item_id = mp.personaje_pokemon_held_item
      WHERE mp.id_master_pokemon = $1`,
     [id_master_pokemon]
   )
@@ -317,7 +321,7 @@ const levelPreview = async (id_pokemon, levelRaw) => {
 // `overrides` opcionales (usados por el creador del master): type_1, type_2 (ids),
 // hp, stats {dex,str,...} (base) y skills [{ id_skill, pref, expert }]. Lo no provisto
 // se deriva de la pokédex, igual que en la creación del jugador.
-const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie, type_1, type_2, hp: hpOverride, stats: statsOverride, skills: skillsOverride, level: levelOverride, proficiency: profOverride, experiencia: expOverride, feats, pokemon_tag }) => {
+const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_bond, move_ids, is_shiny, id_abilitie, type_1, type_2, hp: hpOverride, stats: statsOverride, skills: skillsOverride, level: levelOverride, proficiency: profOverride, experiencia: expOverride, feats, pokemon_tag, held_item_id }) => {
   const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [id_pokemon])
   const pk = pkRows[0]
   if (!pk) return null
@@ -363,8 +367,8 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
          pokemon_sense_2_name, pokemon_sense_2_value,
          personaje_pokemon_exahust_lvl, personaje_pokemon_dsts, personaje_pokemon_dstf,
          personaje_pokemon_type_1, personaje_pokemon_type_2, pokemon_experiencia,
-         pokemon_tag, hit_dice_pool
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+         pokemon_tag, hit_dice_pool, personaje_pokemon_held_item
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
        RETURNING *`,
       [
         id_master, id_pokemon, apodo ?? pk.pokemon_name, hp, hp,
@@ -386,6 +390,7 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
         // Etiqueta editable por el máster; en blanco cae al DEFAULT de la tabla
         (pokemon_tag ?? '').toString().trim() || await tagPorDefecto(),
         level, // hit_dice_pool: el total de dados que da el nivel
+        held_item_id != null ? Number(held_item_id) : null,
       ]
     )
     const mp = mpRows[0]
@@ -477,10 +482,11 @@ const addPokemon = async (id_master, { id_pokemon, apodo, genero, id_nature, id_
 // Edita un Pokémon del master: reemplaza los campos editables (apodo, género, naturaleza,
 // tipos, HP, stats base + bono de naturaleza, skills, movimientos y pasiva).
 const updatePokemon = async (id_master, id_master_pokemon, data) => {
-  const { apodo, genero, id_nature, type_1, type_2, hp, stats, skills, move_ids, id_abilitie, feats } = data
+  const { apodo, genero, id_nature, type_1, type_2, hp, stats, skills, move_ids, id_abilitie, feats, held_item_id } = data
   const id_nat = id_nature != null ? Number(id_nature) : null
   const t1 = type_1 != null ? Number(type_1) : null
   const t2 = type_2 != null ? Number(type_2) : null
+  const heldItemId = held_item_id != null ? Number(held_item_id) : null
 
   return transaction(async (client) => {
     const { rows } = await client.query(
@@ -494,9 +500,9 @@ const updatePokemon = async (id_master, id_master_pokemon, data) => {
       `UPDATE ${TMP} SET
          pokemon_apodo = $1, personaje_pokemon_genero = $2, personaje_pokemon_nature = $3,
          pokemon_hp = $4, pokemon_current_hp = LEAST(COALESCE(pokemon_current_hp, $4), $4),
-         personaje_pokemon_type_1 = $5, personaje_pokemon_type_2 = $6
+         personaje_pokemon_type_1 = $5, personaje_pokemon_type_2 = $6, personaje_pokemon_held_item = $9
        WHERE id_master_pokemon = $7 AND id_master = $8`,
-      [apodo ?? null, generoTextOf(genero), id_nat, Number(hp) || 0, t1, t2, id_master_pokemon, id_master]
+      [apodo ?? null, generoTextOf(genero), id_nat, Number(hp) || 0, t1, t2, id_master_pokemon, id_master, heldItemId]
     )
 
     // stats: los stats ya incluyen la naturaleza → bono 0
@@ -616,6 +622,7 @@ const TPPP   = `"${SCHEMA}"."personaje_pokemon_pasiva"`
 const TPPF   = `"${SCHEMA}"."personaje_pokemon_feat"`
 const TPPFB  = `"${SCHEMA}"."personaje_pokemon_feat_bonus"`
 const TPERS  = `"${SCHEMA}"."personaje"`
+const TPPHI  = `"${SCHEMA}"."personaje_pokemon_held_item"`
 
 const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) => {
   return transaction(async (client) => {
@@ -716,7 +723,17 @@ const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) =
         [f.master_pokemon_feat_id, nf[0].personaje_pokemon_feat_id])
     }
 
-    // ── 7. Borrar del master. Las pasivas no tienen ON DELETE CASCADE, van aparte;
+    // ── 7. Held item: no es una columna de personaje_pokemon, sino una fila en
+    //       su propia tabla (el Pokémon ya entrenado puede llevar varios, con
+    //       feats como Ambidextrous), así que se le crea la primera fila.
+    if (origen.personaje_pokemon_held_item != null) {
+      await client.query(
+        `INSERT INTO ${TPPHI} (personaje_pokemon_held_item_id_pokemon, personaje_pokemon_held_item_id_item)
+         VALUES ($1, $2)`,
+        [nuevoId, origen.personaje_pokemon_held_item])
+    }
+
+    // ── 8. Borrar del master. Las pasivas no tienen ON DELETE CASCADE, van aparte;
     //       feats, bonos, moves, skills y stats caen solos con el registro padre.
     await client.query(`DELETE FROM ${TMPP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
     await client.query(`DELETE FROM ${TMP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
