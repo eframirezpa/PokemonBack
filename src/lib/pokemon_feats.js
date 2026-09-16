@@ -180,13 +180,10 @@ const sanearElementos = async (run, bonos = []) => {
 /**
  * Guarda los bonos de una toma del feat.
  *
- * Casi todos se insertan tal cual: Elemental Adept es repetible y cada toma
- * vuelve a dar su +1 de característica, así que esas filas se acumulan.
- *
- * El de ELEMENTO no. El feat solo tiene un tipo elegido, y volver a tomarlo es
- * la forma de CAMBIARLO —de ahí que el panel lo muestre de solo lectura—. Si se
- * insertara una fila por toma, el Pokémon acabaría con varios tipos a la vez y
- * ninguno sería "el suyo". Se actualiza el que ya tenga, sea de la toma que sea.
+ * Todos se insertan tal cual, incluido el de ELEMENTO: Elemental Adept es
+ * repetible y cada toma es un tipo elegido aparte (el panel ya impide elegir
+ * uno que el Pokémon ya tenga, ver ConfirmFeat), así que estas filas también
+ * se acumulan, una por toma, y no se comparten ni se pisan entre sí.
  *
  * @returns las filas tal y como quedaron, para el resto del flujo
  */
@@ -238,25 +235,6 @@ const guardarBonos = async (run, id_personaje_pokemon, pfId, bonos = []) => {
   const filas = await sanearElementos(run, bonos)
 
   for (const b of filas) {
-    if (esElemento(b.type)) {
-      const { rows: ya } = await run(
-        `SELECT b.personaje_pokemon_feat_bonus_id AS id
-           FROM "${SCHEMA}"."personaje_pokemon_feat_bonus" b
-           JOIN "${SCHEMA}"."personaje_pokemon_feat" pf
-             ON pf.personaje_pokemon_feat_id = b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id
-          WHERE pf.id_trainer_pokemon = $1
-            AND b.personaje_pokemon_feat_bonus_type ILIKE 'element'
-          ORDER BY b.personaje_pokemon_feat_bonus_id LIMIT 1`, [id_personaje_pokemon])
-      if (ya.length) {
-        await run(
-          `UPDATE "${SCHEMA}"."personaje_pokemon_feat_bonus"
-              SET personaje_pokemon_feat_bonus_llave = $2,
-                  personaje_pokemon_feat_bonus_value = $3
-            WHERE personaje_pokemon_feat_bonus_id = $1`,
-          [ya[0].id, LLAVE_ELEMENTO, b.value])
-        continue
-      }
-    }
     await run(
       `INSERT INTO "${SCHEMA}"."personaje_pokemon_feat_bonus"
          (personaje_pokemon_feat_bonus_personaje_pokemon_feat_id,
@@ -267,11 +245,16 @@ const guardarBonos = async (run, id_personaje_pokemon, pfId, bonos = []) => {
   return filas
 }
 
-/** Los bonos de elemento de un Pokémon, para pintarlos en la pestaña Bonus. */
+/**
+ * Los bonos de elemento de un Pokémon, para pintarlos en la pestaña Bonus.
+ *
+ * Cada toma de Elemental Adept guarda su propio tipo elegido (guardarBonos ya
+ * no los pisa entre sí), así que aquí se lee una fila por bono, igual que
+ * cualquier otro: tantas filas como tipos se hayan elegido.
+ */
 const elementosDePokemon = async (run, id_personaje_pokemon) => {
   const { rows } = await run(
     `SELECT b.personaje_pokemon_feat_bonus_id    AS id,
-            b.personaje_pokemon_feat_bonus_type  AS tipo,
             b.personaje_pokemon_feat_bonus_value AS valor,
             f.feat_id, f.feat_name, f.feat_type, f.feat_prerequisite, f.feat_benefits,
             f.feat_ability_score_increase, f.feat_is_repeatable, f.feat_notes
