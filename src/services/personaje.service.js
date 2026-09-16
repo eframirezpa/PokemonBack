@@ -585,7 +585,7 @@ const rutaDelPersonaje = async (id_personaje, personaje_path) => {
   const pathRow = pathRows[0] || null
   if (pathRow) {
     const { rows: cat } = await query(
-      `SELECT path_bonus_id AS id, path_bonus_level AS level,
+      `SELECT path_bonus_id AS id, path_bonus_level AS level, path_bonus_type AS type,
               path_bonus_key AS key, path_bonus_value AS value
          FROM "${SCHEMA}"."path_bonus"
         WHERE path_id = $1 ORDER BY path_bonus_level, path_bonus_id`, [pathRow.path_id])
