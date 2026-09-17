@@ -1241,6 +1241,7 @@ const updateEquipoCantidad = async (id_personaje_equipo, cantidad) => {
 const findFullById = async (id_personaje) => {
   const { rows: pRows } = await query(
     `SELECT p.*, o.origin_name, o.origin_feat_id, b.background_name, b.background_feat_id,
+            o.origin_description, b.background_description,
             b.background_tool_proficiencies_name, b.background_tool_proficiencies_values,
             b.background_armor_proficiencies_value_1, b.background_armor_proficiencies_value_2,
             b.background_armor_proficiencies_value_3, b.background_armor_proficiencies_value_4,
