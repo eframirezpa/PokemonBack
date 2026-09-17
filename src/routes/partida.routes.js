@@ -13,6 +13,10 @@ const sprites = upload.fields([
 
 // Accesible para cualquier usuario autenticado
 router.get('/mis-partidas', authenticate, ctrl.getMisPartidas)
+// El pin del mapa lo LEEN todos los de la partida (jugadores y espectadores),
+// por eso vive aquí arriba y no en el bloque master; escribirlo sí es cosa del
+// máster y va más abajo.
+router.get('/:id/mapa-pin', authenticate, ctrl.getMapaPin)
 
 // Solo master
 const master = [authenticate, requireRole('master')]
@@ -21,6 +25,7 @@ router.get('/:id',                     ...master, ctrl.getById)
 router.post('/',          sprites,     ...master, ctrl.create)
 router.put('/:id',        sprites,     ...master, ctrl.update)
 router.patch('/:id/toggle',            ...master, ctrl.toggleActivada)
+router.patch('/:id/mapa-pin',          ...master, ctrl.setMapaPin)
 
 router.get('/:id/usuarios',            ...master, upCtrl.getByPartida)
 router.get('/:id/usuarios/available',  ...master, upCtrl.getAvailable)

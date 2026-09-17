@@ -92,4 +92,30 @@ const toggleActivada = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { getMisPartidas, getByOwner, getById, create, update, toggleActivada }
+// GET /api/partida/:id/mapa-pin → dónde está la party (lo lee cualquiera en la partida)
+const getMapaPin = async (req, res, next) => {
+  try {
+    const r = await svc.findMapaPin(req.params.id)
+    if (r.error) return res.status(404).json({ error: 'Partida no encontrada' })
+    res.json({ pin: r.pin })
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/partida/:id/mapa-pin → fija, mueve o quita el pin (solo el máster dueño)
+// Body: { pin: { x, y, label?, mapa? } } o { pin: null } para quitarlo.
+const setMapaPin = async (req, res, next) => {
+  try {
+    const { pin } = req.body
+    if (pin) {
+      const x = Number(pin.x), y = Number(pin.y)
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 100 || y < 0 || y > 100) {
+        return res.status(400).json({ error: 'Coordenadas fuera del mapa' })
+      }
+    }
+    const r = await svc.setMapaPin(req.params.id, req.user.user_id, pin)
+    if (r.error) return res.status(404).json({ error: 'Partida no encontrada' })
+    res.json({ pin: r.pin })
+  } catch (e) { next(e) }
+}
+
+module.exports = { getMisPartidas, getByOwner, getById, create, update, toggleActivada, getMapaPin, setMapaPin }

@@ -79,4 +79,56 @@ const remove = async (id) => {
   return rowCount > 0
 }
 
-module.exports = { findActiveByUser, findByOwner, findById, create, updateSprites, update, toggleActivada, remove }
+// ── Pin del mapa ────────────────────────────────────────────────────────────
+// Una sola marca por partida: dónde está la party. La pone el máster y la ven
+// los jugadores. Las coordenadas se guardan en PORCENTAJE de la imagen, así que
+// no dependen de la resolución ni del zoom de quien mire.
+
+/**
+ * El pin tal como lo consume el mapa. Postgres devuelve `numeric` como texto,
+ * así que se convierte aquí: si llegara en string, el `left: x%` del pin se
+ * seguiría viendo bien pero cualquier cuenta con el valor fallaría en silencio.
+ */
+const pinDeFila = (row) => {
+  if (!row || row.mapa_pin_x == null || row.mapa_pin_y == null) return null
+  return {
+    x: Number(row.mapa_pin_x),
+    y: Number(row.mapa_pin_y),
+    label: row.mapa_pin_label || null,
+    mapa: row.mapa_pin_mapa || 'all',
+  }
+}
+
+const findMapaPin = async (id_partida) => {
+  const { rows } = await query(
+    `SELECT mapa_pin_x, mapa_pin_y, mapa_pin_label, mapa_pin_mapa
+       FROM ${T} WHERE id_partida = $1`, [id_partida])
+  if (!rows.length) return { error: 'notfound' }
+  return { pin: pinDeFila(rows[0]) }
+}
+
+/**
+ * Fija, mueve o quita el pin. `pin` en null lo borra.
+ * Solo el dueño de la partida puede tocarlo: el id del máster entra en el WHERE
+ * en vez de comprobarse aparte, así una partida ajena no se actualiza nunca.
+ */
+const setMapaPin = async (id_partida, owner_id, pin) => {
+  const vacio = !pin || pin.x == null || pin.y == null
+  const { rows } = await query(
+    `UPDATE ${T}
+        SET mapa_pin_x = $3, mapa_pin_y = $4, mapa_pin_label = $5, mapa_pin_mapa = $6,
+            updated_at = now()
+      WHERE id_partida = $1 AND owner_partida = $2
+      RETURNING mapa_pin_x, mapa_pin_y, mapa_pin_label, mapa_pin_mapa`,
+    [
+      id_partida, owner_id,
+      vacio ? null : Number(pin.x),
+      vacio ? null : Number(pin.y),
+      vacio ? null : (String(pin.label ?? '').trim() || null),
+      vacio ? null : (String(pin.mapa ?? '').trim() || 'all'),
+    ])
+  if (!rows.length) return { error: 'notfound' }
+  return { pin: pinDeFila(rows[0]) }
+}
+
+module.exports = { findActiveByUser, findByOwner, findById, create, updateSprites, update, toggleActivada, remove, findMapaPin, setMapaPin }
