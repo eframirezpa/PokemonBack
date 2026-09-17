@@ -40,4 +40,26 @@ const create = async (req, res, next) => {
   }
 }
 
-module.exports = { getAll, getById, create }
+// PATCH /api/items/:id → edita precio, tipo y descripción (mochila del máster)
+const update = async (req, res, next) => {
+  try {
+    const { item_type, item_cost, item_description } = req.body
+    if (!TIPOS_VALIDOS.includes(item_type)) return res.status(400).json({ error: 'Tipo de item inválido' })
+    const cost = Number(item_cost)
+    if (item_cost === '' || item_cost == null || !Number.isFinite(cost) || cost < 0) {
+      return res.status(400).json({ error: 'El precio debe ser un número' })
+    }
+    if (!String(item_description || '').trim()) return res.status(400).json({ error: 'La descripción es obligatoria' })
+
+    const actualizado = await svc.update(req.params.id, {
+      item_type, item_cost: cost, item_description: item_description.trim(),
+    })
+    if (!actualizado) return res.status(404).json({ error: 'Item no encontrado' })
+    res.json(actualizado)
+  } catch (e) {
+    // Igual que al crear: si la base se queja, que se lea el motivo en el popup
+    res.status(400).json({ error: e.message || 'No se pudo editar el item' })
+  }
+}
+
+module.exports = { getAll, getById, create, update }

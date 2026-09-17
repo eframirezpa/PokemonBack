@@ -7,5 +7,7 @@ router.get('/', ctrl.getAll)
 router.get('/:id', ctrl.getById)
 // POST /api/items → crea un item nuevo (solo el máster, desde la mochila de la partida)
 router.post('/', authenticate, requireRole('master'), ctrl.create)
+// PATCH /api/items/:id → el máster corrige precio, tipo o descripción
+router.patch('/:id', authenticate, requireRole('master'), ctrl.update)
 
 module.exports = router

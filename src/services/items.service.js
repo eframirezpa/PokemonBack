@@ -65,4 +65,23 @@ const create = async ({ item_name, item_type, item_cost, item_description }) => 
   return rows[0]
 }
 
-module.exports = { findAll, findById, create }
+/**
+ * Edita un item del catálogo: precio, tipo y descripción.
+ *
+ * El nombre no se toca: es único y con él se referencian los items en la
+ * mochila y en los Pokémon, así que cambiarlo aquí sería renombrar algo que ya
+ * está repartido por la partida.
+ */
+const update = async (item_id, { item_type, item_cost, item_description }) => {
+  // item_last_updated no se toca: la tabla tiene un trigger que la pisa con
+  // now() en cada UPDATE, así que ponerla aquí solo confundiría al leerlo.
+  const { rows } = await query(
+    `UPDATE ${T}
+        SET item_type = $2, item_cost = $3, item_description = $4
+      WHERE item_id = $1
+      RETURNING *`,
+    [item_id, item_type, item_cost, item_description])
+  return rows[0] || null
+}
+
+module.exports = { findAll, findById, create, update }
