@@ -15,7 +15,7 @@ const getById = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-const TIPOS_VALIDOS = ['berry', 'pokeball', 'held item', 'evolution', 'trainer gear', 'Event Item', 'medicine']
+const TIPOS_VALIDOS = ['berry', 'pokeball', 'held item', 'evolution', 'trainer gear', 'Event Item', 'medicine', 'Proyectil']
 
 // POST /api/items → crea un item (mochila del máster en la partida)
 const create = async (req, res, next) => {
