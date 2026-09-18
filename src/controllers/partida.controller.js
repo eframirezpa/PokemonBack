@@ -118,4 +118,66 @@ const setMapaPin = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { getMisPartidas, getByOwner, getById, create, update, toggleActivada, getMapaPin, setMapaPin }
+// ── Iniciativa ──
+// GET: lo lee cualquiera de la mesa. Escribir tiene dos puertas: el máster
+// maneja la ronda entera, y cada jugador solo puede apuntar SU tirada.
+
+const getIniciativa = async (req, res, next) => {
+  try {
+    const r = await svc.findIniciativa(req.params.id)
+    if (r.error) return res.status(404).json({ error: 'Partida no encontrada' })
+    res.json({ iniciativa: r.iniciativa })
+  } catch (e) { next(e) }
+}
+
+// POST /api/partida/:id/iniciativa  { participantes } → abre la ronda (máster)
+const abrirIniciativa = async (req, res, next) => {
+  try {
+    const participantes = Array.isArray(req.body?.participantes) ? req.body.participantes : []
+    if (!participantes.length) return res.status(400).json({ error: 'No hay a quién pedirle iniciativa' })
+    const r = await svc.abrirIniciativa(req.params.id, req.user.user_id, participantes)
+    if (r.error) return res.status(404).json({ error: 'Partida no encontrada' })
+    res.json({ iniciativa: r.iniciativa })
+  } catch (e) { next(e) }
+}
+
+// PUT /api/partida/:id/iniciativa  { iniciativa } → turno, ronda o cerrar (máster)
+const setIniciativa = async (req, res, next) => {
+  try {
+    const r = await svc.guardarIniciativa(req.params.id, req.body?.iniciativa ?? null, req.user.user_id)
+    if (r.error) return res.status(404).json({ error: 'Partida no encontrada' })
+    res.json({ iniciativa: r.iniciativa })
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/partida/:id/iniciativa/tirada  { d20, mod } → la tirada propia
+const tirarIniciativa = async (req, res, next) => {
+  try {
+    const d20 = Number(req.body?.d20)
+    if (!Number.isInteger(d20) || d20 < 1 || d20 > 20) {
+      return res.status(400).json({ error: 'El dado debe ser un número entre 1 y 20' })
+    }
+    // La clave se arma con el id de quien pide, no con lo que mande el cliente:
+    // así nadie puede tirar por otro.
+    const r = await svc.tirarIniciativa(req.params.id, `u${req.user.user_id}`, d20, req.body?.mod,
+                                        req.user.user_id, req.body?.personaje_id ?? null)
+    if (r.error === 'notfound')   return res.status(404).json({ error: 'Partida no encontrada' })
+    if (r.error === 'sinronda')   return res.status(409).json({ error: 'No hay una tirada de iniciativa abierta' })
+    if (r.error === 'noparticipa') return res.status(403).json({ error: 'No estás en esta ronda' })
+    res.json({ iniciativa: r.iniciativa })
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/partida/:id/iniciativa/turno  { direccion } → pasa el turno
+const avanzarTurno = async (req, res, next) => {
+  try {
+    const esMaster = req.user.role === 'master'
+    const r = await svc.avanzarTurno(req.params.id, req.user.user_id, esMaster, req.body?.direccion)
+    if (r.error === 'notfound')  return res.status(404).json({ error: 'Partida no encontrada' })
+    if (r.error === 'sinronda')  return res.status(409).json({ error: 'No hay un combate en curso' })
+    if (r.error === 'noesturno') return res.status(403).json({ error: 'No es tu turno' })
+    res.json({ iniciativa: r.iniciativa })
+  } catch (e) { next(e) }
+}
+
+module.exports = { avanzarTurno, getMisPartidas, getByOwner, getById, create, update, toggleActivada, getMapaPin, setMapaPin, getIniciativa, abrirIniciativa, setIniciativa, tirarIniciativa }

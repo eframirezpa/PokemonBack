@@ -17,6 +17,12 @@ router.get('/mis-partidas', authenticate, ctrl.getMisPartidas)
 // por eso vive aquí arriba y no en el bloque master; escribirlo sí es cosa del
 // máster y va más abajo.
 router.get('/:id/mapa-pin', authenticate, ctrl.getMapaPin)
+// La iniciativa la lee toda la mesa, y cada quien apunta SU tirada (el
+// controlador arma la clave con su propio id, nadie tira por otro).
+router.get('/:id/iniciativa',            authenticate, ctrl.getIniciativa)
+router.patch('/:id/iniciativa/tirada',   authenticate, ctrl.tirarIniciativa)
+// Pasar turno: el máster siempre; el dueño del turno, solo hacia adelante
+router.patch('/:id/iniciativa/turno',    authenticate, ctrl.avanzarTurno)
 
 // Solo master
 const master = [authenticate, requireRole('master')]
@@ -26,6 +32,8 @@ router.post('/',          sprites,     ...master, ctrl.create)
 router.put('/:id',        sprites,     ...master, ctrl.update)
 router.patch('/:id/toggle',            ...master, ctrl.toggleActivada)
 router.patch('/:id/mapa-pin',          ...master, ctrl.setMapaPin)
+router.post('/:id/iniciativa',         ...master, ctrl.abrirIniciativa)
+router.put('/:id/iniciativa',          ...master, ctrl.setIniciativa)
 
 router.get('/:id/usuarios',            ...master, upCtrl.getByPartida)
 router.get('/:id/usuarios/available',  ...master, upCtrl.getAvailable)
