@@ -31,39 +31,6 @@ const BOND_MIN = -3, BOND_MAX = 3
 
 // Lo que sube el rasgo: uno a todo el que califique, y dos más si es el starter.
 const BONO_GENERAL = 1, BONO_STARTER = 2
-const acotar = n => Math.max(BOND_MIN, Math.min(BOND_MAX, Math.floor(Number(n) || 0)))
-
-/**
- * Pone personaje_pokemon_bond en el bond cuyo bond_level coincide con los
- * puntos del Pokémon. El emparejamiento va contra bond_level y no contra
- * bonds.bond_points porque los niveles negativos tienen 0 puntos en el
- * catálogo: por ahí, -1, -2 y -3 serían indistinguibles.
- *
- * Se llama tras cualquier cambio de puntos: edición manual, subida de nivel del
- * Pokémon o del entrenador.
- *
- * @param filtro { id_personaje } o { id_personaje_pokemon }
- */
-const sincronizarBond = async (filtro, run = query) => {
-  const porPokemon = filtro?.id_personaje_pokemon != null
-  const { rows } = await run(
-    `UPDATE ${TPP} pp
-        SET personaje_pokemon_bond = b.bond_id
-       FROM ${TB} b
-      WHERE b.bond_level = LEAST(GREATEST(pp.personaje_pokemon_bond_points, $2), $3)
-        AND pp.${porPokemon ? 'id_personaje_pokemon' : 'id_personaje'} = $1
-        AND pp.personaje_pokemon_bond IS DISTINCT FROM b.bond_id
-      RETURNING pp.id_personaje_pokemon, b.bond_id, b.bond_name`,
-    [porPokemon ? filtro.id_personaje_pokemon : filtro.id_personaje, BOND_MIN, BOND_MAX])
-  return rows
-}
-
-// Igual que la anterior pero sin tumbar la operación principal si algo falla
-const sincronizarBondSeguro = async (filtro, run = query) => {
-  try { return await sincronizarBond(filtro, run) } catch (e) {
-    console.error('sincronizarBond:', e.message); return []
-  }
-}
 
 /**
  * Deja los puntos del Pokémon acordes a su nivel de vínculo.
@@ -313,6 +280,6 @@ const setBondPoints = async (id_personaje, id_personaje_pokemon, valor, run = qu
 
 module.exports = {
   tieneBonoBond, rutaDelBonoBond, bondExtraDelPersonaje, previewBond,
-  sincronizarBond, sincronizarBondSeguro, setBondNivel, opcionesDeBond, subirBondDelStarter,
+  setBondNivel, opcionesDeBond, subirBondDelStarter,
   sincronizarPuntosConNivel, spendBondPoints, setBondPoints, extraDelRasgo, BOND_MIN, BOND_MAX,
 }
