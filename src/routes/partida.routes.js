@@ -23,6 +23,9 @@ router.get('/:id/iniciativa',            authenticate, ctrl.getIniciativa)
 router.patch('/:id/iniciativa/tirada',   authenticate, ctrl.tirarIniciativa)
 // Pasar turno: el máster siempre; el dueño del turno, solo hacia adelante
 router.patch('/:id/iniciativa/turno',    authenticate, ctrl.avanzarTurno)
+// Intercambio de Alert / Alert Pokemon: cualquiera de los dos lados lo puede
+// llamar, la validación de quién tiene el feat vive en el service.
+router.patch('/:id/iniciativa/intercambio', authenticate, ctrl.intercambiarIniciativa)
 
 // Solo master
 const master = [authenticate, requireRole('master')]

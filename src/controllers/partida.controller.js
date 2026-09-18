@@ -160,7 +160,8 @@ const tirarIniciativa = async (req, res, next) => {
     // La clave se arma con el id de quien pide, no con lo que mande el cliente:
     // así nadie puede tirar por otro.
     const r = await svc.tirarIniciativa(req.params.id, `u${req.user.user_id}`, d20, req.body?.mod,
-                                        req.user.user_id, req.body?.personaje_id ?? null)
+                                        req.user.user_id, req.body?.personaje_id ?? null,
+                                        req.body?.personaje_pokemon_id ?? null, !!req.body?.con_alert)
     if (r.error === 'notfound')   return res.status(404).json({ error: 'Partida no encontrada' })
     if (r.error === 'sinronda')   return res.status(409).json({ error: 'No hay una tirada de iniciativa abierta' })
     if (r.error === 'noparticipa') return res.status(403).json({ error: 'No estás en esta ronda' })
@@ -180,4 +181,25 @@ const avanzarTurno = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { avanzarTurno, getMisPartidas, getByOwner, getById, create, update, toggleActivada, getMapaPin, setMapaPin, getIniciativa, abrirIniciativa, setIniciativa, tirarIniciativa }
+// PATCH /api/partida/:id/iniciativa/intercambio  { con_clave } → intercambia
+// el resultado con otro participante (Alert / Alert Pokemon)
+const intercambiarIniciativa = async (req, res, next) => {
+  try {
+    const conClave = String(req.body?.con_clave || '')
+    if (!conClave) return res.status(400).json({ error: 'Falta con quién intercambiar' })
+    const miClave = `u${req.user.user_id}`
+    const r = await svc.intercambiarIniciativa(req.params.id, miClave, conClave)
+    if (r.error === 'notfound')     return res.status(404).json({ error: 'Partida no encontrada' })
+    if (r.error === 'sinronda')     return res.status(409).json({ error: 'No hay una ronda de iniciativa' })
+    if (r.error === 'yaempezo')     return res.status(409).json({ error: 'El combate ya empezó' })
+    if (r.error === 'mismapersona') return res.status(400).json({ error: 'No puedes intercambiar contigo mismo' })
+    if (r.error === 'noparticipa')  return res.status(403).json({ error: 'Alguno de los dos no está en esta ronda' })
+    if (r.error === 'noaplica')     return res.status(400).json({ error: 'No se puede intercambiar con el máster' })
+    if (r.error === 'notirado')     return res.status(409).json({ error: 'Los dos tienen que haber tirado ya' })
+    if (r.error === 'sinfeat')      return res.status(403).json({ error: 'Ninguno de los dos tiene Alert o Alert Pokemon' })
+    if (r.error === 'yausado')      return res.status(409).json({ error: 'Ese intercambio ya se usó esta ronda' })
+    res.json({ iniciativa: r.iniciativa })
+  } catch (e) { next(e) }
+}
+
+module.exports = { avanzarTurno, getMisPartidas, getByOwner, getById, create, update, toggleActivada, getMapaPin, setMapaPin, getIniciativa, abrirIniciativa, setIniciativa, tirarIniciativa, intercambiarIniciativa }

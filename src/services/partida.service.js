@@ -145,12 +145,19 @@ const ordenarParticipantes = (participantes = []) => participantes
     clave:       String(p.clave),
     user_id:     p.user_id ?? null,
     personaje_id: p.personaje_id ?? null,
+    // Con qué ser vivo tiró: su entrenador, o uno de sus Pokémon invocados.
+    // Null significa "el entrenador", igual que antes de que existiera esto.
+    personaje_pokemon_id: p.personaje_pokemon_id ?? null,
     nombre:      String(p.nombre || 'Sin nombre'),
     es_master:   !!p.es_master,
     mod:         num(p.mod),
     d20:         p.d20 == null ? null : num(p.d20),
     listo:       p.d20 != null,
     total:       p.d20 == null ? null : num(p.d20) + num(p.mod),
+    // Alert / Alert Pokemon: con qué se tiró esta tirada tenía el feat, y si ya
+    // gastó su intercambio de esta ronda (una vez por combate, no por tirada).
+    con_alert:   !!p.con_alert,
+    swap_usado:  !!p.swap_usado,
   }))
   // Los que ya tiraron primero y de mayor a menor. Empate: el modificador más
   // alto manda, que es el desempate habitual en mesa.
@@ -186,9 +193,32 @@ const guardarIniciativa = async (id_partida, iniciativa, owner_id = null) => {
  * traer un personaje ajeno: con dos cuentas en el mismo navegador, la segunda
  * heredaba el de la primera y la ronda mostraba el mismo nombre dos veces.
  * Si el personaje no cuadra, se usa el nombre de usuario, que nunca miente.
+ *
+ * Con personaje_pokemon_id se tira con ESE Pokémon en vez del entrenador (se
+ * puede elegir con cuál jugar la iniciativa si hay uno invocado): el cálculo
+ * usa sus stats, pero en la fila -turno, intercambio, todo lo que se ve de la
+ * ronda- sigue apareciendo el entrenador, nunca el apodo del Pokémon. Solo se
+ * cuenta si de verdad es un Pokémon de ese personaje; si no cuadra, cae al
+ * entrenador igual que si no se hubiera mandado nada.
  */
 const TUP = `"${SCHEMA}"."usuarios_partida"`
-const resolverNombre = async (id_partida, user_id, personaje_id) => {
+const resolverNombre = async (id_partida, user_id, personaje_id, personaje_pokemon_id = null) => {
+  if (personaje_pokemon_id != null && personaje_id != null) {
+    const { rows } = await query(
+      `SELECT pp.id_personaje_pokemon, p.nombre_personaje
+         FROM "${SCHEMA}"."personaje_pokemon" pp
+         JOIN "${SCHEMA}"."personaje" p ON p.id_personaje = pp.id_personaje
+         JOIN ${TUP} up ON up.id_usuarios_partida = p.id_usuario_partida
+        WHERE pp.id_personaje_pokemon = $1 AND pp.id_personaje = $2
+          AND up.user_id = $3 AND up.id_partida = $4`,
+      [personaje_pokemon_id, personaje_id, user_id, id_partida])
+    if (rows.length) {
+      return {
+        personaje_id, personaje_pokemon_id: rows[0].id_personaje_pokemon,
+        nombre: rows[0].nombre_personaje || 'Sin nombre',
+      }
+    }
+  }
   if (personaje_id != null) {
     const { rows } = await query(
       `SELECT p.id_personaje, p.nombre_personaje
@@ -196,10 +226,10 @@ const resolverNombre = async (id_partida, user_id, personaje_id) => {
          JOIN ${TUP} up ON up.id_usuarios_partida = p.id_usuario_partida
         WHERE p.id_personaje = $1 AND up.user_id = $2 AND up.id_partida = $3`,
       [personaje_id, user_id, id_partida])
-    if (rows.length) return { personaje_id: rows[0].id_personaje, nombre: rows[0].nombre_personaje || 'Sin nombre' }
+    if (rows.length) return { personaje_id: rows[0].id_personaje, personaje_pokemon_id: null, nombre: rows[0].nombre_personaje || 'Sin nombre' }
   }
   const { rows } = await query(`SELECT user_name FROM "${SCHEMA}"."usuarios" WHERE user_id = $1`, [user_id])
-  return { personaje_id: null, nombre: rows[0]?.user_name || 'Sin nombre' }
+  return { personaje_id: null, personaje_pokemon_id: null, nombre: rows[0]?.user_name || 'Sin nombre' }
 }
 
 /** Abre la ronda: todos sin tirada, esperando a que cada quien meta su d20 */
@@ -225,23 +255,64 @@ const abrirIniciativa = async (id_partida, owner_id, participantes) => {
  * Apunta la tirada de UN participante. La puede llamar cualquiera de la mesa,
  * pero solo sobre su propia entrada: la clave se compara con quien pide.
  */
-const tirarIniciativa = async (id_partida, clave, d20, mod, user_id = null, personaje_id = null) => {
+const tirarIniciativa = async (id_partida, clave, d20, mod, user_id = null, personaje_id = null, personaje_pokemon_id = null, con_alert = false) => {
   const actual = await findIniciativa(id_partida)
   if (actual.error) return actual
   const ini = actual.iniciativa
   if (!ini || !Array.isArray(ini.participantes)) return { error: 'sinronda' }
   if (!ini.participantes.some(p => p.clave === clave)) return { error: 'noparticipa' }
 
-  // Quien tira sabe con qué personaje juega; el máster solo lo había adivinado
-  // por la presencia. Se corrige aquí, y verificado: nunca un personaje ajeno.
+  // Quien tira sabe con qué personaje juega (y con cuál de sus Pokémon, si
+  // eligió tirar con el invocado en vez de con él); el máster solo lo había
+  // adivinado por la presencia. Se corrige aquí, y verificado: nunca un
+  // personaje o Pokémon ajeno.
   const propio = ini.participantes.find(p => p.clave === clave)
   const quien = (!propio.es_master && user_id != null && personaje_id != null)
-    ? await resolverNombre(id_partida, user_id, personaje_id)
+    ? await resolverNombre(id_partida, user_id, personaje_id, personaje_pokemon_id)
     : null
 
   const participantes = ini.participantes.map(p => p.clave === clave
-    ? { ...p, ...(quien || {}), d20: num(d20), mod: mod == null ? p.mod : num(mod) }
+    ? { ...p, ...(quien || {}), d20: num(d20), mod: mod == null ? p.mod : num(mod), con_alert: !propio.es_master && !!con_alert }
     : p)
+
+  return guardarIniciativa(id_partida, { ...ini, participantes: ordenarParticipantes(participantes) })
+}
+
+/**
+ * Intercambia el RESULTADO de la tirada (d20 + modificador, o sea el total)
+ * entre dos participantes que ya tiraron. Es lo que dan Alert y Alert Pokemon:
+ * "immediately after Initiative is rolled, you can swap Initiative with one
+ * willing ally". No cambia quiénes son -nombre, personaje, Pokémon- solo el
+ * número con el que quedan en la fila.
+ *
+ * Puede llamarlo cualquiera de los dos lados del intercambio (el que tiene el
+ * feat proponiendo, o el aliado aceptando): lo que importa es que AL MENOS
+ * uno de los dos lo tenga, no quién de los dos ejecuta la petición.
+ *
+ * Solo mientras se sigue pidiendo la ronda: una vez el máster la arranca, ya
+ * no hay "antes de que empiece el combate" al que volver.
+ */
+const intercambiarIniciativa = async (id_partida, claveA, claveB) => {
+  const actual = await findIniciativa(id_partida)
+  if (actual.error) return actual
+  const ini = actual.iniciativa
+  if (!ini || !Array.isArray(ini.participantes)) return { error: 'sinronda' }
+  if (ini.estado !== 'pidiendo') return { error: 'yaempezo' }
+  if (claveA === claveB) return { error: 'mismapersona' }
+
+  const pa = ini.participantes.find(p => p.clave === claveA)
+  const pb = ini.participantes.find(p => p.clave === claveB)
+  if (!pa || !pb) return { error: 'noparticipa' }
+  if (pa.es_master || pb.es_master) return { error: 'noaplica' }
+  if (!pa.listo || !pb.listo) return { error: 'notirado' }
+  if (!pa.con_alert && !pb.con_alert) return { error: 'sinfeat' }
+  if ((pa.con_alert && pa.swap_usado) || (pb.con_alert && pb.swap_usado)) return { error: 'yausado' }
+
+  const participantes = ini.participantes.map(p => {
+    if (p.clave === claveA) return { ...p, d20: pb.d20, mod: pb.mod, swap_usado: p.swap_usado || p.con_alert }
+    if (p.clave === claveB) return { ...p, d20: pa.d20, mod: pa.mod, swap_usado: p.swap_usado || p.con_alert }
+    return p
+  })
 
   return guardarIniciativa(id_partida, { ...ini, participantes: ordenarParticipantes(participantes) })
 }
@@ -272,4 +343,4 @@ const avanzarTurno = async (id_partida, user_id, esMaster, direccion = 'siguient
   return guardarIniciativa(id_partida, { ...ini, turno: siguiente, ronda })
 }
 
-module.exports = { avanzarTurno, findActiveByUser, findByOwner, findById, create, updateSprites, update, toggleActivada, remove, findMapaPin, setMapaPin, findIniciativa, guardarIniciativa, abrirIniciativa, tirarIniciativa }
+module.exports = { avanzarTurno, findActiveByUser, findByOwner, findById, create, updateSprites, update, toggleActivada, remove, findMapaPin, setMapaPin, findIniciativa, guardarIniciativa, abrirIniciativa, tirarIniciativa, intercambiarIniciativa }
