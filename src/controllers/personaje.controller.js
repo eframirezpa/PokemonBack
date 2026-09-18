@@ -392,6 +392,15 @@ const setEditable = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /api/personaje/:id/inspirado  { inspirado } → marca/desmarca el punto de inspiración
+const setInspirado = async (req, res, next) => {
+  try {
+    const data = await svc.setInspirado(req.params.id, !!req.body.inspirado)
+    if (!data) return res.status(404).json({ error: 'Personaje no encontrado' })
+    res.json(data)
+  } catch (e) { next(e) }
+}
+
 // POST /api/personaje  { id_partida, nombre_personaje, personaje_origin, ... }
 const create = async (req, res, next) => {
   try {
@@ -474,7 +483,26 @@ const transferPokemon = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /api/personaje/:id/estados  { estados: [...] } → estados del entrenador
+const setEstados = async (req, res, next) => {
+  try {
+    const r = await svc.setEstadosPersonaje(req.params.id, req.body?.estados)
+    if (r.error) return res.status(404).json({ error: 'Personaje no encontrado' })
+    res.json({ estados: r.estados })
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/personaje/:id/pokemon/:idpp/estados → estados de uno de sus Pokémon
+const setEstadosPokemon = async (req, res, next) => {
+  try {
+    const r = await svc.setEstadosPokemon(req.params.id, req.params.idpp, req.body?.estados)
+    if (r.error) return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json({ estados: r.estados })
+  } catch (e) { next(e) }
+}
+
 module.exports = {
+  setEstados, setEstadosPokemon,
   getMine, getParty, getById, getFull, updateCombate, updatePokemonCombate,
   getEquipo, addEquipo, updateEquipo,
   getArmor, addArmor, updateArmorInUse,
@@ -483,7 +511,7 @@ module.exports = {
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
   renamePokemon, releasePokemon, transferPokemon, pendingRenames, spendMovePP, setMovePP,
-  getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
+  getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, setInspirado, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,
 }

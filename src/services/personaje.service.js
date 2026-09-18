@@ -347,7 +347,7 @@ const findParty = async (id_partida) => {
     `SELECT p.id_personaje, up.user_id, p.nombre_personaje,
             p.personaje_hp, p.personaje_current_hp,
             p.personaje_exahust_lvl, p.personaje_dsts, p.personaje_dstf,
-            p.personaje_is_editable
+            p.personaje_estados, p.personaje_is_editable, p.personaje_inspirado
      FROM ${T} p
      JOIN ${TUP} up ON up.id_usuarios_partida = p.id_usuario_partida
      WHERE up.id_partida = $1
@@ -362,7 +362,7 @@ const findParty = async (id_partida) => {
     `SELECT pp.id_personaje, pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_hp, pp.pokemon_current_hp,
             pp.pokemon_level,
             pp.personaje_pokemon_exahust_lvl, pp.personaje_pokemon_dsts, pp.personaje_pokemon_dstf,
-            pp.pokemon_is_shiny,
+            pp.personaje_pokemon_estados, pp.pokemon_is_shiny,
             pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pk.pokemon_media_main
      FROM ${TPP} pp JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
      WHERE pp.id_personaje = ANY($1::int[]) AND pp.pokemon_en_equipo = true
@@ -1237,6 +1237,38 @@ const updateEquipoCantidad = async (id_personaje_equipo, cantidad) => {
   return rows[0] || null
 }
 
+// ── Estados alterados ───────────────────────────────────────────────────────
+// Se guardan como lista separada por comas ('quemado,confuso'): son pocos,
+// cortos y siempre se leen y escriben todos juntos. Los pone y los quita cada
+// quien sobre sí mismo y sobre sus Pokémon.
+
+const ESTADOS = ['paralizado', 'dormido', 'envenenado', 'quemado', 'congelado', 'confuso']
+
+/** Deja solo los estados conocidos, sin repetir y en un orden estable */
+const sanearEstados = (lista) => {
+  const pedidos = new Set((Array.isArray(lista) ? lista : String(lista ?? '').split(','))
+    .map(e => String(e).trim().toLowerCase()).filter(Boolean))
+  const limpios = ESTADOS.filter(e => pedidos.has(e))
+  return limpios.length ? limpios.join(',') : null
+}
+
+const setEstadosPersonaje = async (id_personaje, estados) => {
+  const { rows } = await query(
+    `UPDATE ${T} SET personaje_estados = $2 WHERE id_personaje = $1 RETURNING personaje_estados`,
+    [id_personaje, sanearEstados(estados)])
+  return rows.length ? { estados: rows[0].personaje_estados } : { error: 'notfound' }
+}
+
+/** El Pokémon tiene que ser del personaje que pide: si no, no se actualiza nada */
+const setEstadosPokemon = async (id_personaje, id_personaje_pokemon, estados) => {
+  const { rows } = await query(
+    `UPDATE ${TPP} SET personaje_pokemon_estados = $3
+      WHERE id_personaje_pokemon = $2 AND id_personaje = $1
+      RETURNING personaje_pokemon_estados`,
+    [id_personaje, id_personaje_pokemon, sanearEstados(estados)])
+  return rows.length ? { estados: rows[0].personaje_pokemon_estados } : { error: 'notfound' }
+}
+
 // Personaje con toda su información relacionada (para la hoja completa)
 const findFullById = async (id_personaje) => {
   const { rows: pRows } = await query(
@@ -1905,6 +1937,17 @@ const setEditable = async (id_personaje, is_editable) => {
   return rows[0] || null
 }
 
+// Marca/desmarca el punto de inspiración (personaje_inspirado). Lo activa el
+// máster desde el mismo panel donde activa la edición.
+const setInspirado = async (id_personaje, inspirado) => {
+  const { rows } = await query(
+    `UPDATE ${T} SET personaje_inspirado = $1 WHERE id_personaje = $2
+     RETURNING id_personaje, personaje_inspirado`,
+    [!!inspirado, id_personaje]
+  )
+  return rows[0] || null
+}
+
 /**
  * Crea un personaje completo (personaje + stats + skills + equipo + details)
  * dentro de una transacción.
@@ -2284,6 +2327,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
 }
 
 module.exports = {
+  ESTADOS, setEstadosPersonaje, setEstadosPokemon,
   updateBondPoints, bondOpciones, gastarBondPoints, fijarBondPoints,
   spendPathResource, setPathResource, spendFeatResource, setFeatResource,
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
@@ -2294,7 +2338,7 @@ module.exports = {
   findWeapon, addWeapon, setWeaponInUse,
   findPokemon, findPokemonDetail, setPokemonEnEquipo, setPokemonEnJuego, addPokemon, addPokemonExperience,
   pokeSlots, enEquipoCount, renamePokemon, releasePokemon, transferPokemonToPersonaje, pendingRenames, spendMovePP, setMovePP,
-  findFeats, addFeat, removeFeat, setFeatAvailable, setEditable, spendPokedollars, addPokedollars,
+  findFeats, addFeat, removeFeat, setFeatAvailable, setEditable, setInspirado, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,
 }
