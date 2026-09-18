@@ -40,10 +40,11 @@ const create = async (req, res, next) => {
   }
 }
 
-// PATCH /api/items/:id → edita precio, tipo y descripción (mochila del máster)
+// PATCH /api/items/:id → edita nombre, precio, tipo y descripción (mochila del máster)
 const update = async (req, res, next) => {
   try {
-    const { item_type, item_cost, item_description } = req.body
+    const { item_name, item_type, item_cost, item_description } = req.body
+    if (!String(item_name || '').trim()) return res.status(400).json({ error: 'El nombre es obligatorio' })
     if (!TIPOS_VALIDOS.includes(item_type)) return res.status(400).json({ error: 'Tipo de item inválido' })
     const cost = Number(item_cost)
     if (item_cost === '' || item_cost == null || !Number.isFinite(cost) || cost < 0) {
@@ -52,7 +53,7 @@ const update = async (req, res, next) => {
     if (!String(item_description || '').trim()) return res.status(400).json({ error: 'La descripción es obligatoria' })
 
     const actualizado = await svc.update(req.params.id, {
-      item_type, item_cost: cost, item_description: item_description.trim(),
+      item_name: item_name.trim(), item_type, item_cost: cost, item_description: item_description.trim(),
     })
     if (!actualizado) return res.status(404).json({ error: 'Item no encontrado' })
     res.json(actualizado)
@@ -62,4 +63,16 @@ const update = async (req, res, next) => {
   }
 }
 
-module.exports = { getAll, getById, create, update }
+// DELETE /api/items/:id → borra un item del catálogo (solo si no está en uso)
+const remove = async (req, res, next) => {
+  try {
+    const borrado = await svc.remove(req.params.id)
+    if (!borrado) return res.status(404).json({ error: 'Item no encontrado' })
+    res.status(204).end()
+  } catch (e) {
+    // enUso: el máster pidió borrar algo que ya está repartido por la partida
+    res.status(e.enUso ? 409 : 400).json({ error: e.message || 'No se pudo borrar el item' })
+  }
+}
+
+module.exports = { getAll, getById, create, update, remove }
