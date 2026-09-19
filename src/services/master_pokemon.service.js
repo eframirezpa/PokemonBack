@@ -92,12 +92,15 @@ const findPokemonDetail = async (id_master_pokemon) => {
             n.nature_effect_decrease, n.nature_effect_decrease_value,
             b.bond_name, b.bond_description,
             hi.item_name AS held_item_name, hi.item_type AS held_item_type,
-            hi.item_media_sprite AS held_item_sprite
+            hi.item_media_sprite AS held_item_sprite,
+            t1.pokemon_types_name AS type_1_name, t2.pokemon_types_name AS type_2_name
      FROM ${TMP} mp
      JOIN ${TPOKEDEX} pk ON pk.pokemon_id = mp.id_pokemon
      LEFT JOIN ${TNAT} n ON n.nature_id = mp.personaje_pokemon_nature
      LEFT JOIN ${TBONDS} b ON b.bond_id = mp.personaje_pokemon_bond
      LEFT JOIN ${TITEM} hi ON hi.item_id = mp.personaje_pokemon_held_item
+     LEFT JOIN ${TPTYPES} t1 ON t1.pokemon_types_id = mp.personaje_pokemon_type_1
+     LEFT JOIN ${TPTYPES} t2 ON t2.pokemon_types_id = mp.personaje_pokemon_type_2
      WHERE mp.id_master_pokemon = $1`,
     [id_master_pokemon]
   )

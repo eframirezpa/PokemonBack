@@ -2,6 +2,7 @@ const router  = require('express').Router()
 const multer  = require('multer')
 const ctrl    = require('../controllers/partida.controller')
 const upCtrl  = require('../controllers/usuarios_partida.controller')
+const campoCtrl = require('../controllers/master_campo.controller')
 const { authenticate, requireRole } = require('../middleware/auth.middleware')
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -26,6 +27,9 @@ router.patch('/:id/iniciativa/turno',    authenticate, ctrl.avanzarTurno)
 // Intercambio de Alert / Alert Pokemon: cualquiera de los dos lados lo puede
 // llamar, la validación de quién tiene el feat vive en el service.
 router.patch('/:id/iniciativa/intercambio', authenticate, ctrl.intercambiarIniciativa)
+// El campo (Pokémon/NPC invocados) lo lee toda la mesa; invocar/quitar/ocultar
+// es cosa del máster y va en el bloque de abajo.
+router.get('/:id/campo', authenticate, campoCtrl.getCampo)
 
 // Solo master
 const master = [authenticate, requireRole('master')]
@@ -37,6 +41,10 @@ router.patch('/:id/toggle',            ...master, ctrl.toggleActivada)
 router.patch('/:id/mapa-pin',          ...master, ctrl.setMapaPin)
 router.post('/:id/iniciativa',         ...master, ctrl.abrirIniciativa)
 router.put('/:id/iniciativa',          ...master, ctrl.setIniciativa)
+router.post('/:id/campo/pokemon',        ...master, campoCtrl.agregarPokemon)
+router.post('/:id/campo/npc',            ...master, campoCtrl.agregarNpc)
+router.patch('/:id/campo/:idcampo',      ...master, campoCtrl.actualizar)
+router.delete('/:id/campo/:idcampo',     ...master, campoCtrl.quitar)
 
 router.get('/:id/usuarios',            ...master, upCtrl.getByPartida)
 router.get('/:id/usuarios/available',  ...master, upCtrl.getAvailable)
