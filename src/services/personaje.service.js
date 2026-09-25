@@ -347,7 +347,8 @@ const findParty = async (id_partida) => {
     `SELECT p.id_personaje, up.user_id, p.nombre_personaje,
             p.personaje_hp, p.personaje_current_hp,
             p.personaje_exahust_lvl, p.personaje_dsts, p.personaje_dstf,
-            p.personaje_estados, p.personaje_is_editable, p.personaje_inspirado
+            p.personaje_estados, p.personaje_is_editable, p.personaje_inspirado,
+            p.personaje_terreno
      FROM ${T} p
      JOIN ${TUP} up ON up.id_usuarios_partida = p.id_usuario_partida
      WHERE up.id_partida = $1
@@ -362,7 +363,7 @@ const findParty = async (id_partida) => {
     `SELECT pp.id_personaje, pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_hp, pp.pokemon_current_hp,
             pp.pokemon_level,
             pp.personaje_pokemon_exahust_lvl, pp.personaje_pokemon_dsts, pp.personaje_pokemon_dstf,
-            pp.personaje_pokemon_estados, pp.pokemon_is_shiny,
+            pp.personaje_pokemon_estados, pp.pokemon_is_shiny, pp.personaje_pokemon_terreno,
             pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pk.pokemon_media_main
      FROM ${TPP} pp JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
      WHERE pp.id_personaje = ANY($1::int[]) AND pp.pokemon_en_equipo = true
@@ -1801,6 +1802,17 @@ const fijarBondPoints  = (id, idpp, valor)    => setBondPoints(id, idpp, valor)
 // Agrega una especialización copiando sus bonos resueltos. No permite repetir la misma.
 //   ability_score_increase → tipo 'stat',  llave = stat,  valor = cantidad
 //   skill_proficiency      → tipo 'skill', llave = skill, valor = 'exp'
+const bonosDeSpec = (spec) => {
+  const bonos = []
+  if (spec.specialization_ability_score_increase) {
+    bonos.push({ type: 'stat', llave: spec.specialization_ability_score_increase, value: String(spec.specialization_ability_score_increase_value ?? 1) })
+  }
+  if (spec.specialization_skill_proficiency) {
+    bonos.push({ type: 'skill', llave: spec.specialization_skill_proficiency, value: 'exp' })
+  }
+  return bonos
+}
+
 const addSpecialization = async (id_personaje, id_specialization) => {
   const { rows: sRows } = await query(`SELECT * FROM ${TSPEC} WHERE specialization_id = $1`, [id_specialization])
   const spec = sRows[0]
@@ -1812,13 +1824,7 @@ const addSpecialization = async (id_personaje, id_specialization) => {
   )
   if (dup.length) return { error: 'duplicate' }
 
-  const bonos = []
-  if (spec.specialization_ability_score_increase) {
-    bonos.push({ type: 'stat', llave: spec.specialization_ability_score_increase, value: String(spec.specialization_ability_score_increase_value ?? 1) })
-  }
-  if (spec.specialization_skill_proficiency) {
-    bonos.push({ type: 'skill', llave: spec.specialization_skill_proficiency, value: 'exp' })
-  }
+  const bonos = bonosDeSpec(spec)
 
   return transaction(async (client) => {
     for (const b of bonos) {
@@ -2161,6 +2167,22 @@ const create = async (id_partida, user_id, data) => {
           [pfId, r.type, r.llave, r.value]
         )
       }
+    }
+
+    // ── 8. Especialización elegida en la creación ─────────────────
+    // Obligatoria: a nivel 1 el tope es una, y la pide el paso "Especialidad".
+    const { rows: spRows } = await client.query(
+      `SELECT * FROM ${TSPEC} WHERE specialization_id = $1`, [Number(data.specialization_id) || 0]
+    )
+    if (!spRows[0]) throw new Error('specialization_id')
+    for (const b of bonosDeSpec(spRows[0])) {
+      await client.query(
+        `INSERT INTO ${TPSB}
+           (id_personaje, id_specializations, tipo_personaje_specializations_bonus,
+            llave_personaje_specializations_bonus, valor_personaje_specializations_bonus)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [id_personaje, spRows[0].specialization_id, b.type, b.llave, b.value]
+      )
     }
 
     return personaje

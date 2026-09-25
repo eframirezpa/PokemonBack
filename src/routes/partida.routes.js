@@ -3,6 +3,7 @@ const multer  = require('multer')
 const ctrl    = require('../controllers/partida.controller')
 const upCtrl  = require('../controllers/usuarios_partida.controller')
 const campoCtrl = require('../controllers/master_campo.controller')
+const terrenoCtrl = require('../controllers/terreno.controller')
 const { authenticate, requireRole } = require('../middleware/auth.middleware')
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -30,6 +31,8 @@ router.patch('/:id/iniciativa/intercambio', authenticate, ctrl.intercambiarInici
 // El campo (Pokémon/NPC invocados) lo lee toda la mesa; invocar/quitar/ocultar
 // es cosa del máster y va en el bloque de abajo.
 router.get('/:id/campo', authenticate, campoCtrl.getCampo)
+// Catálogo de terrenos (lo lee el máster para el selector). Va antes de /:id.
+router.get('/terrenos', authenticate, terrenoCtrl.listar)
 
 // Solo master
 const master = [authenticate, requireRole('master')]
@@ -39,6 +42,10 @@ router.post('/',          sprites,     ...master, ctrl.create)
 router.put('/:id',        sprites,     ...master, ctrl.update)
 router.patch('/:id/toggle',            ...master, ctrl.toggleActivada)
 router.patch('/:id/mapa-pin',          ...master, ctrl.setMapaPin)
+// Terrenos: solo los pone el máster; se leen desde la party
+router.patch('/:id/terreno/personaje/:idp', ...master, terrenoCtrl.setPersonaje)
+router.patch('/:id/terreno/pokemon/:idpp',  ...master, terrenoCtrl.setPokemon)
+router.patch('/:id/terreno/todos',          ...master, terrenoCtrl.setTodos)
 router.post('/:id/iniciativa',         ...master, ctrl.abrirIniciativa)
 router.put('/:id/iniciativa',          ...master, ctrl.setIniciativa)
 router.post('/:id/campo/pokemon',        ...master, campoCtrl.agregarPokemon)

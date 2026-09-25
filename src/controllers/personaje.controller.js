@@ -416,6 +416,9 @@ const create = async (req, res, next) => {
       return res.status(400).json({ error: 'Faltan las elecciones del feat Skilled' })
     }
     // Mismo caso con el terreno del rasgo de cuna: sin elegirlo no se crea.
+    if (e.message === 'specialization_id') {
+      return res.status(400).json({ error: 'Falta elegir la especialidad' })
+    }
     if (e.message === 'terrain_choice') {
       return res.status(400).json({ error: 'Falta elegir el terreno del rasgo' })
     }
