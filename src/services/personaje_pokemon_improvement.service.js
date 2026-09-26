@@ -20,6 +20,7 @@ const STRUGGLE_ID = 705
 const ASI_TYPE = 'ability score improvement'
 // "d10" → 10. El dado de golpe vive en la tabla pokemon como texto.
 const hitDiceMax = s => { const m = /(\d+)/.exec(s || ''); return m ? Number(m[1]) : 0 }
+const { claveMove, SQL_CLAVE_MOVE } = require('../lib/move_name')
 const splitList = s => (s || '').split(',').map(x => x.trim()).filter(Boolean)
 const norm = s => (s || '').toLowerCase().trim()
 // Columnas de "New Moves" por nivel en la tabla pokemon
@@ -43,7 +44,7 @@ const movePoolNames = (pk, level) => {
   for (const [L, col] of Object.entries(NEW_MOVE_COL)) {
     if (level >= Number(L)) names.push(...splitList(pk[col]))
   }
-  return [...new Set(names.map(n => norm(n)).filter(Boolean))]
+  return [...new Set(names.map(n => claveMove(n)).filter(Boolean))]
 }
 
 // Lista de mejoras pendientes (applied = false) de todos los Pokémon de un personaje,
@@ -101,7 +102,7 @@ const listPending = async (id_personaje) => {
               m.move_higher_levels, m.move_optional_rules, m.move_has_damage,
               m.move_damage_level_1, m.move_damage_level_5, m.move_damage_level_10, m.move_damage_level_17,
               m.move_damage_modifier, m.move_damage_type, m.move_attack_scope,
-              m.move_save_attribute, m.move_save_dc, m.move_is_concentration FROM ${TMOVES} m WHERE lower(m.move_name) = ANY($1)`, [poolNames])
+              m.move_save_attribute, m.move_save_dc, m.move_is_concentration FROM ${TMOVES} m WHERE ${SQL_CLAVE_MOVE('m.move_name')} = ANY($1)`, [poolNames])
       pool = mrows.filter(m => m.move_id !== STRUGGLE_ID)
     }
     item.move_pool = pool
@@ -208,7 +209,7 @@ const checkMoves = async (pend, moveIdsRaw, id_personaje_pokemon) => {
   const poolNames = pkRows[0] ? movePoolNames(pkRows[0], Number(pend.pokemon_level) || 1) : []
   let poolIds = new Set()
   if (poolNames.length) {
-    const { rows: mrows } = await query(`SELECT move_id FROM ${TMOVES} WHERE lower(move_name) = ANY($1)`, [poolNames])
+    const { rows: mrows } = await query(`SELECT move_id FROM ${TMOVES} WHERE ${SQL_CLAVE_MOVE('move_name')} = ANY($1)`, [poolNames])
     poolIds = new Set(mrows.map(m => m.move_id))
   }
   if (ids.some(id => !poolIds.has(id))) return { error: 'invalidmove' }

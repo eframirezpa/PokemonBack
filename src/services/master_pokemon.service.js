@@ -28,6 +28,7 @@ const STRUGGLE_ID = 705
 const splitList = s => (s || '').split(',').map(x => x.trim()).filter(Boolean)
 const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min
 // Columna de movimientos por nivel de "New Moves" en la tabla pokemon
+const { claveMove, SQL_CLAVE_MOVE } = require('../lib/move_name')
 const NEW_MOVE_COL = { 2: 'pokemon_moves_level2', 6: 'pokemon_moves_level6', 10: 'pokemon_moves_level10', 14: 'pokemon_moves_level14', 18: 'pokemon_moves_level18' }
 
 const norm = (s) => (s || '').toLowerCase().trim()
@@ -300,11 +301,11 @@ const levelPreview = async (id_pokemon, levelRaw) => {
   for (let L = minLevel + 1; L <= level; L++) hpRolls += randInt(3, 4)
 
   // Movimientos por defecto: 4 al azar del pool (sin Struggle)
-  const uniqNames = [...new Set(poolNames.map(n => n.trim().toLowerCase()).filter(Boolean))]
+  const uniqNames = [...new Set(poolNames.map(n => claveMove(n)).filter(Boolean))]
   let moveObjs = []
   if (uniqNames.length) {
     const { rows: mrows } = await query(
-      `SELECT move_id, move_name, move_type FROM ${TMOVES} WHERE lower(move_name) = ANY($1)`, [uniqNames])
+      `SELECT move_id, move_name, move_type FROM ${TMOVES} WHERE ${SQL_CLAVE_MOVE('move_name')} = ANY($1)`, [uniqNames])
     moveObjs = mrows.filter(m => m.move_id !== STRUGGLE_ID)
   }
   const defaultMoves = [...moveObjs].sort(() => Math.random() - 0.5).slice(0, 4)
