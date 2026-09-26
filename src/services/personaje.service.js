@@ -643,8 +643,12 @@ const rutaDelPersonaje = async (id_personaje, personaje_path) => {
         level: Number(r.level),
       }
     }
+    // El detalle (qué es y cuándo se recupera) sale del mismo texto de la ruta que
+    // usan los dados; sin él el nombre del punto no abría nada al pulsarlo.
+    const texto = await textoDe(r.nombre)
     return {
       id: Number(r.id), nombre: r.nombre, columna: r.columna,
+      feat: texto ? { feat_name: r.nombre, feat_benefits: texto } : null,
       actual: Math.max(0, Number(r.actual) || 0),
       maximo: await maximoOCero(r.columna, { id_personaje }),
       level: Number(r.level),
