@@ -1,7 +1,7 @@
 const { query, SCHEMA } = require('../config/db')
 const T = `"${SCHEMA}"."pokemon"`
 
-const findAll = async ({ limit = 20, offset = 0, search = '', type = '', starter = false }) => {
+const findAll = async ({ limit = 20, offset = 0, search = '', type = '', size = '', starter = false }) => {
   const params = []
   const conditions = []
 
@@ -12,6 +12,10 @@ const findAll = async ({ limit = 20, offset = 0, search = '', type = '', starter
   if (type) {
     params.push(type)
     conditions.push(`(pokemon_type_1 = $${params.length} OR pokemon_type_2 = $${params.length})`)
+  }
+  if (size) {
+    params.push(size)
+    conditions.push(`pokemon_size ILIKE $${params.length}`)
   }
   if (starter) {
     // SR <= 0.5, nivel mínimo 1 y forma base (sin evolución previa)

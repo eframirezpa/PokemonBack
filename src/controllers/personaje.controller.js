@@ -53,7 +53,32 @@ const getFull = async (req, res, next) => {
 
 const getEquipo = async (req, res, next) => {
   try {
-    res.json(await svc.findEquipo(req.params.id))
+    const { parseCuracion, parsePP, parseEstado } = require('../lib/item_curacion')
+    // `curacion` dice si el item se puede usar automáticamente (y con qué dados)
+    const equipo = await svc.findEquipo(req.params.id)
+    res.json(equipo.map(e => ({ ...e, curacion: parseCuracion(e), pp: parsePP(e), estado: parseEstado(e) })))
+  } catch (e) { next(e) }
+}
+
+// POST /api/personaje/:id/equipo/:idEquipo/usar  { tipo, id_personaje, id_personaje_pokemon?, tirada? }
+const usarItemCurativo = async (req, res, next) => {
+  try {
+    const r = await require('../services/item_curacion.service').usar(
+      req.params.id, req.params.idEquipo, req.user.user_id, req.body || {}, req.body?.tirada)
+    const err = {
+      notfound:   [404, 'Item no encontrado'],
+      noaplica:   [400, 'Este item no cura HP de forma automática'],
+      objetivo:   [400, 'Objetivo no válido'],
+      revive:     [400, 'Este item solo se usa sobre un Pokémon debilitado'],
+      debilitado: [400, 'Un Pokémon debilitado solo se puede levantar con un Revive'],
+      move:       [400, 'Elige un movimiento del Pokémon'],
+      sinEstado:  [400, 'Ese ser vivo no tiene un estado que este item pueda curar'],
+      estado:     [400, 'Elige qué estado curar'],
+      lleno:      [400, 'Ese Pokémon ya tiene todos los PP'],
+      tirada:     [400, r.min != null ? `La tirada debe estar entre ${r.min} y ${r.max}` : 'Tirada no válida'],
+    }[r.error]
+    if (err) return res.status(err[0]).json({ error: err[1] })
+    res.json(r)
   } catch (e) { next(e) }
 }
 
@@ -505,6 +530,7 @@ const setEstadosPokemon = async (req, res, next) => {
 }
 
 module.exports = {
+  usarItemCurativo,
   setEstados, setEstadosPokemon,
   getMine, getParty, getById, getFull, updateCombate, updatePokemonCombate,
   getEquipo, addEquipo, updateEquipo,
