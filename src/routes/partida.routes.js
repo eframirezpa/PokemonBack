@@ -4,6 +4,7 @@ const ctrl    = require('../controllers/partida.controller')
 const upCtrl  = require('../controllers/usuarios_partida.controller')
 const campoCtrl = require('../controllers/master_campo.controller')
 const terrenoCtrl = require('../controllers/terreno.controller')
+const logCtrl = require('../controllers/partida_log.controller')
 const { authenticate, requireRole } = require('../middleware/auth.middleware')
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -33,6 +34,11 @@ router.patch('/:id/iniciativa/intercambio', authenticate, ctrl.intercambiarInici
 router.get('/:id/campo', authenticate, campoCtrl.getCampo)
 // Catálogo de terrenos (lo lee el máster para el selector). Va antes de /:id.
 router.get('/terrenos', authenticate, terrenoCtrl.listar)
+// Registro de actividad: lo lee toda la mesa; escribir una línea también,
+// porque cualquiera puede originar una (un item usado, un ataque...), no solo
+// el máster.
+router.get('/:id/log',  authenticate, logCtrl.getLog)
+router.post('/:id/log', authenticate, logCtrl.agregarLog)
 
 // Solo master
 const master = [authenticate, requireRole('master')]
