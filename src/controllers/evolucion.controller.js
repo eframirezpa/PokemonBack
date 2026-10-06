@@ -20,6 +20,9 @@ const responder = (res, r) => {
     }[r.detalle] || 'Reparto de puntos no válido'
     return res.status(400).json({ error: msg })
   }
+  if (r.error === 'movimientos') {
+    return res.status(400).json({ error: `Elige entre 1 y ${r.max ?? 4} movimientos de los que sabe o de su forma nueva` })
+  }
   const e = ERRORES[r.error]
   if (e) return res.status(e[0]).json({ error: e[1] })
   res.json(r)

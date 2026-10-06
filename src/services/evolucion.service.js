@@ -10,6 +10,8 @@
 const { query, transaction, SCHEMA } = require('../config/db')
 const { evaluarCondiciones, validarPuntos, topeStat, STAT_KEYS } = require('../lib/evolucion')
 const { claveMove, SQL_CLAVE_MOVE } = require('../lib/move_name')
+const { movePoolNames, STRUGGLE_ID } = require('./personaje_pokemon_improvement.service')
+const { efectosDePokemon } = require('../lib/pokemon_feats')
 
 const TPP   = `"${SCHEMA}"."personaje_pokemon"`
 const TPK   = `"${SCHEMA}"."pokemon"`
@@ -60,8 +62,10 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
   if (!pp) return null
 
   // En serie: dentro de la transacción todas van por el mismo client
-  const moves = await run(`SELECT m.move_name, m.move_type FROM ${TPPM} pm JOIN ${TMOV} m ON m.move_id = pm.personaje_pokemon_moves_move_id
-          WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1`, [id_personaje_pokemon]).then(r => r.rows)
+  const moves = await run(`SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range
+           FROM ${TPPM} pm JOIN ${TMOV} m ON m.move_id = pm.personaje_pokemon_moves_move_id
+          WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1
+          ORDER BY pm.personaje_pokemon_moves_id`, [id_personaje_pokemon]).then(r => r.rows)
   const mochila = await run(`SELECT i.item_name FROM ${TEQ} eq JOIN ${TIT} i ON i.item_id = eq.id_item
           WHERE eq.id_personaje = $1 AND eq.personaje_equipo_cantidad > 0`, [id_personaje]).then(r => r.rows)
   const catalogo = await run(`SELECT item_name FROM ${TIT}`).then(r => r.rows)
@@ -80,6 +84,18 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
     itemClaves: new Set(mochila.map(i => claveMove(i.item_name))),
     itemsCatalogoClaves: new Set(catalogo.map(i => claveMove(i.item_name))),
   }
+
+  // Movimientos: puede quedarse con los que sabe o tomar los de la forma
+  // nueva hasta su nivel. Una sola consulta para el pool de todas las ramas.
+  const maxMoves = (await efectosDePokemon(run, id_personaje_pokemon)).known_moves_max
+  const poolPorEvo = new Map(evos.map(e => [Number(e.evolution_id), movePoolNames(e, ctx.nivel)]))
+  const todasClaves = [...new Set([...poolPorEvo.values()].flat())]
+  const { rows: poolRows } = todasClaves.length
+    ? await run(`SELECT move_id, move_name, move_type, move_pp, move_time, move_range FROM ${TMOV}
+                  WHERE ${SQL_CLAVE_MOVE('move_name')} = ANY($1) AND move_id <> $2`, [todasClaves, STRUGGLE_ID])
+    : { rows: [] }
+  const sabidos = moves.filter(m => Number(m.move_id) !== STRUGGLE_ID)
+  const sabidosIds = new Set(sabidos.map(m => Number(m.move_id)))
 
   // Nombre y descripción de todas las habilidades que se van a mostrar
   const abIds = [...new Set(evos.flatMap(e => habilidadesDe(e).map(a => a.id)))]
@@ -104,6 +120,8 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
       .filter(a => !a.hidden || pasivaEraOculta)
       .map(a => ({ id: a.id, hidden: a.hidden, nombre: abPorId.get(a.id)?.ability_name || `#${a.id}`, descripcion: abPorId.get(a.id)?.ability_description || null }))
     const soportada = norm(e.evolution_effect_type) === 'asi'
+    const claves = new Set(poolPorEvo.get(Number(e.evolution_id)) || [])
+    const nuevos = poolRows.filter(m => claves.has(claveMove(m.move_name)) && !sabidosIds.has(Number(m.move_id)))
     return {
       evolution_id: Number(e.evolution_id),
       destino: {
@@ -122,10 +140,11 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
       disponible: soportada && !pospuesta && condiciones.every(c => c.cumple !== false),
       conserva_pasiva: conserva,
       pasivas_elegibles: elegibles,
+      movimientos_nuevos: nuevos,
     }
   })
 
-  return { pp, ctx, stats, pasiva, pospuesta, opciones, evos }
+  return { pp, ctx, stats, pasiva, pospuesta, opciones, evos, sabidos, maxMoves }
 }
 
 const statsBase = (stats) => Object.fromEntries(STAT_KEYS.map(k => [k, Number(stats[`pokemon_${k}`]) || 0]))
@@ -146,6 +165,8 @@ const opciones = async (id_personaje, id_personaje_pokemon) => {
     stats: statsBase(c.stats),
     stats_bonus: Object.fromEntries(STAT_KEYS.map(k => [k, Number(c.stats[`pokemon_${k}_bonus`]) || 0])),
     pasiva_actual: c.pasiva ? { id: Number(c.pasiva.id_abilitie), nombre: c.pasiva.ability_name } : null,
+    movimientos_actuales: c.sabidos,
+    max_moves: c.maxMoves,
     opciones: c.opciones,
   }
 }
@@ -158,7 +179,7 @@ const typeId = async (run, name) => {
 }
 
 /** POST: aplica la evolución elegida. Todo se revalida aquí, no en el cliente. */
-const evolucionar = async (id_personaje, id_personaje_pokemon, { evolution_id, stat_adds, id_abilitie, confirmadas }) => {
+const evolucionar = async (id_personaje, id_personaje_pokemon, { evolution_id, stat_adds, id_abilitie, confirmadas, move_ids }) => {
   return transaction(async (client) => {
     const run = (t, p) => client.query(t, p)
     // Bloquea la fila: un doble clic no puede evolucionarlo dos veces
@@ -185,6 +206,16 @@ const evolucionar = async (id_personaje, id_personaje_pokemon, { evolution_id, s
     if (!op.conserva_pasiva) {
       nuevaPasiva = Number(id_abilitie)
       if (!op.pasivas_elegibles.some(a => a.id === nuevaPasiva)) return { error: 'pasiva' }
+    }
+
+    // Movimientos elegidos: de los que ya sabe o de los nuevos de esta forma,
+    // al menos uno y sin pasar su tope (4, o más con Extra Move). Struggle no
+    // cuenta: siempre se conserva.
+    if (!Array.isArray(move_ids)) return { error: 'movimientos' }
+    const elegidos = [...new Set(move_ids.map(Number).filter(n => Number.isInteger(n) && n !== STRUGGLE_ID))]
+    const validos = new Set([...c.sabidos.map(m => Number(m.move_id)), ...op.movimientos_nuevos.map(m => Number(m.move_id))])
+    if (!elegidos.length || elegidos.length > c.maxMoves || elegidos.some(id => !validos.has(id))) {
+      return { error: 'movimientos', max: c.maxMoves }
     }
 
     const pk = c.evos.find(e => Number(e.evolution_id) === op.evolution_id)
@@ -271,7 +302,22 @@ const evolucionar = async (id_personaje, id_personaje_pokemon, { evolution_id, s
       if (!rowCount) await run(`INSERT INTO ${TPPA} (id_abilitie, id_personaje_pokemon) VALUES ($1, $2)`, [nuevaPasiva, id_personaje_pokemon])
     }
 
-    // Los movimientos que ya sabía se conservan: no se tocan.
+    // 6. Movimientos: se quitan los que no eligió (Struggle se queda siempre)
+    // y se agregan los nuevos con los PP llenos. Los que conserva mantienen
+    // los PP que tenían.
+    await run(
+      `DELETE FROM ${TPPM} WHERE personaje_pokemon_moves_personaje_pokemon_id = $1
+         AND personaje_pokemon_moves_move_id <> $2 AND NOT (personaje_pokemon_moves_move_id = ANY($3::int[]))`,
+      [id_personaje_pokemon, STRUGGLE_ID, elegidos])
+    for (const mid of elegidos) {
+      if (c.sabidos.some(m => Number(m.move_id) === mid)) continue
+      await run(
+        `INSERT INTO ${TPPM} (personaje_pokemon_moves_move_id, personaje_pokemon_moves_personaje_pokemon_id,
+                              personaje_pokemon_moves_current_pp, personaje_pokemon_moves_max_pp)
+         SELECT $1, $2, COALESCE(m.move_pp, 0), COALESCE(m.move_pp, 0) FROM ${TMOV} m WHERE m.move_id = $1`,
+        [mid, id_personaje_pokemon])
+    }
+
     return {
       ok: true,
       de: c.pp.especie,

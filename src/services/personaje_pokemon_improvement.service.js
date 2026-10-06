@@ -342,4 +342,4 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hp
   })
 }
 
-module.exports = { listPending, confirmMoves, confirmAsi }
+module.exports = { listPending, confirmMoves, confirmAsi, movePoolNames, STRUGGLE_ID }
