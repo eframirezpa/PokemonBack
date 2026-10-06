@@ -25,9 +25,10 @@ test('vidaDeNivel: topa el nivel al rango válido en vez de romperse con basura'
   assert.equal(vidaDeNivel(undefined), 6)
   assert.equal(vidaDeNivel('no es un número'), 6)
 
-  // 2.9 trunca a nivel 2 (una subida, un d6): igual que vidaDeNivel(2)
+  // 2.9 trunca a nivel 2: base 6 + 1 por la subida + un d6 → entre 8 y 13,
+  // el mismo rango que el test de arriba calcula para nivel 2
   const hpDecimal = vidaDeNivel(2.9)
-  assert.ok(hpDecimal >= 7 && hpDecimal <= 12, `2.9 debería comportarse como nivel 2, dio ${hpDecimal}`)
+  assert.ok(hpDecimal >= 8 && hpDecimal <= 13, `2.9 debería comportarse como nivel 2, dio ${hpDecimal}`)
 
   const hpNivelMax = vidaDeNivel(NIVEL_MAX + 100)
   const subidasMax = NIVEL_MAX - 1
