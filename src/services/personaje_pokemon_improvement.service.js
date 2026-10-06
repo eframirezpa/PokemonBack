@@ -105,7 +105,11 @@ const listPending = async (id_personaje) => {
               m.move_save_attribute, m.move_save_dc, m.move_is_concentration FROM ${TMOVES} m WHERE ${SQL_CLAVE_MOVE('m.move_name')} = ANY($1)`, [poolNames])
       pool = mrows.filter(m => m.move_id !== STRUGGLE_ID)
     }
-    item.move_pool = pool
+    // Los que ya sabe siguen siendo elegibles aunque no estén en el pool de su
+    // especie actual: al evolucionar conserva los de la forma anterior (regla
+    // de poke5e), y los aprendidos por un feat tampoco salen del pool.
+    const enPool = new Set(pool.map(m => m.move_id))
+    item.move_pool = [...pool, ...item.learned_moves.filter(m => !enPool.has(m.move_id))]
 
     if (isAsi) {
       const { rows: st } = await query(`SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [p.idpp])
@@ -212,6 +216,11 @@ const checkMoves = async (pend, moveIdsRaw, id_personaje_pokemon) => {
     const { rows: mrows } = await query(`SELECT move_id FROM ${TMOVES} WHERE ${SQL_CLAVE_MOVE('move_name')} = ANY($1)`, [poolNames])
     poolIds = new Set(mrows.map(m => m.move_id))
   }
+  // Lo que ya sabe también vale (ver listPending)
+  const { rows: sabidos } = await query(
+    `SELECT personaje_pokemon_moves_move_id AS id FROM ${TPPM} WHERE personaje_pokemon_moves_personaje_pokemon_id = $1`,
+    [id_personaje_pokemon])
+  for (const r of sabidos) poolIds.add(Number(r.id))
   if (ids.some(id => !poolIds.has(id))) return { error: 'invalidmove' }
   return { ids }
 }

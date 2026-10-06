@@ -532,7 +532,21 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
             pp.pokemon_experiencia, pp.pokemon_en_equipo, pp.pokemon_is_shiny, pp.personaje_pokemon_is_in_game,
             pp.pokemon_tag, pp.personaje_pokemon_bond_points,
             pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny,
-            pk.pokemon_media_main, pk.pokemon_media_main_shiny
+            pk.pokemon_media_main, pk.pokemon_media_main_shiny,
+            -- Pistas para el botón Evolucionar de la tarjeta. evolucion_lista
+            -- solo mira el nivel: las demás condiciones las verifica el
+            -- endpoint de opciones al abrir la ventana.
+            EXISTS (SELECT 1 FROM "${SCHEMA}"."evolution" e
+                     WHERE e.evolution_from_pokemon_id = pp.id_pokemon) AS tiene_evolucion,
+            (COALESCE(pp.personaje_pokemon_evo_pospuesta_nivel, 0) < pp.pokemon_level
+             AND EXISTS (SELECT 1 FROM "${SCHEMA}"."evolution" e
+                          WHERE e.evolution_from_pokemon_id = pp.id_pokemon
+                            AND lower(e.evolution_effect_type) = 'asi'
+                            -- CASE: Postgres no garantiza el orden de un AND, y
+                            -- el cast fallaría con las condiciones de movimiento
+                            AND CASE WHEN e.evolution_condition_1_type = 'level'
+                                      AND e.evolution_condition_1_value ~ '^[0-9]+$'
+                                     THEN e.evolution_condition_1_value::int END <= pp.pokemon_level)) AS evolucion_lista
      FROM ${TPP} pp
      JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
      WHERE pp.id_personaje = $1${cond}

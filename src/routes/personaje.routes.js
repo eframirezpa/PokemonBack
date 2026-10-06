@@ -5,6 +5,7 @@ const pkFeatCtrl = require('../controllers/personaje_pokemon_feat.controller')
 const heldItemCtrl = require('../controllers/personaje_pokemon_held_item.controller')
 const improveCtrl = require('../controllers/personaje_pokemon_improvement.controller')
 const descanso = require('../controllers/descanso.controller')
+const evoCtrl = require('../controllers/evolucion.controller')
 const { authenticate } = require('../middleware/auth.middleware')
 
 router.get('/',                    authenticate, ctrl.getMine)
@@ -78,6 +79,10 @@ router.patch('/:id/pokemon/:idpp/apodo',       authenticate, ctrl.renamePokemon)
 router.patch('/:id/pokemon/:idpp/moves/:idrow/pp', authenticate, ctrl.spendMovePP)
 router.put('/:id/pokemon/:idpp/moves/:idrow/pp',   authenticate, ctrl.setMovePP)
 router.post('/:id/pokemon/:idpp/transfer',     authenticate, ctrl.transferPokemon)
+// Evolución: opciones con sus condiciones, evolucionar y posponer
+router.get('/:id/pokemon/:idpp/evolucion',           authenticate, evoCtrl.getOpciones)
+router.post('/:id/pokemon/:idpp/evolucion',          authenticate, evoCtrl.evolucionar)
+router.post('/:id/pokemon/:idpp/evolucion/posponer', authenticate, evoCtrl.posponer)
 router.delete('/:id/pokemon/:idpp',            authenticate, ctrl.releasePokemon)
 // Objetos equipados por el Pokemon
 router.get('/:id/pokemon/:idpp/held-items',          authenticate, heldItemCtrl.getHeldItems)
