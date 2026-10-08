@@ -27,6 +27,7 @@ const TEQ   = `"${SCHEMA}"."personaje_equipo"`
 const TIT   = `"${SCHEMA}"."items"`
 const TBOND = `"${SCHEMA}"."bonds"`
 const TTYP  = `"${SCHEMA}"."pokemon_types"`
+const TPPI  = `"${SCHEMA}"."personaje_pokemon_pending_improvement"`
 
 const norm = s => String(s || '').toLowerCase().trim()
 const splitList = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean)
@@ -112,6 +113,16 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
   const pospuesta = pp.personaje_pokemon_evo_pospuesta_nivel != null
     && ctx.nivel <= Number(pp.personaje_pokemon_evo_pospuesta_nivel)
 
+  // Por decisión del DM (contra la regla 7 de poke5e), primero se aplican las
+  // mejoras de subida de nivel y después la evolución: mientras quede alguna
+  // sin aplicar, no se puede evolucionar. Así la tirada de HP y el pool de
+  // movimientos de ese nivel salen de la forma anterior.
+  const { rows: pend } = await run(
+    `SELECT 1 FROM ${TPPI}
+      WHERE personaje_pokemon_pending_improvement_pokemon_id = $1
+        AND personaje_pokemon_pending_improvement_applied = false LIMIT 1`, [id_personaje_pokemon])
+  const mejorasPendientes = pend.length > 0
+
   const opciones = evos.map(e => {
     const condiciones = evaluarCondiciones(e, ctx)
     const habs = habilidadesDe(e)
@@ -137,14 +148,14 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
       soportada,
       efecto_especial: soportada ? null : e.evolution_effect_value,
       condiciones,
-      disponible: soportada && !pospuesta && condiciones.every(c => c.cumple !== false),
+      disponible: soportada && !pospuesta && !mejorasPendientes && condiciones.every(c => c.cumple !== false),
       conserva_pasiva: conserva,
       pasivas_elegibles: elegibles,
       movimientos_nuevos: nuevos,
     }
   })
 
-  return { pp, ctx, stats, pasiva, pospuesta, opciones, evos, sabidos, maxMoves }
+  return { pp, ctx, stats, pasiva, pospuesta, mejorasPendientes, opciones, evos, sabidos, maxMoves }
 }
 
 const statsBase = (stats) => Object.fromEntries(STAT_KEYS.map(k => [k, Number(stats[`pokemon_${k}`]) || 0]))
@@ -162,6 +173,7 @@ const opciones = async (id_personaje, id_personaje_pokemon) => {
     hit_dice_actual: c.pp.pokemon_hit_dice,
     ac_actual: c.pp.personaje_pokemon_ac,
     pospuesta: c.pospuesta,
+    mejoras_pendientes: c.mejorasPendientes,
     stats: statsBase(c.stats),
     stats_bonus: Object.fromEntries(STAT_KEYS.map(k => [k, Number(c.stats[`pokemon_${k}_bonus`]) || 0])),
     pasiva_actual: c.pasiva ? { id: Number(c.pasiva.id_abilitie), nombre: c.pasiva.ability_name } : null,
@@ -192,6 +204,7 @@ const evolucionar = async (id_personaje, id_personaje_pokemon, { evolution_id, s
     const op = c.opciones.find(o => o.evolution_id === Number(evolution_id))
     if (!op) return { error: 'opcion' }
     if (c.pospuesta) return { error: 'pospuesta' }
+    if (c.mejorasPendientes) return { error: 'pendientes' }
     if (!op.soportada) return { error: 'especial' }
     if (op.condiciones.some(x => x.cumple === false)) return { error: 'condicion' }
     const conf = new Set((Array.isArray(confirmadas) ? confirmadas : []).map(Number))

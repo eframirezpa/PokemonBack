@@ -8,6 +8,7 @@ const ERRORES = {
   condicion: [400, 'No se cumplen las condiciones de la evolución'],
   confirmar: [400, 'Falta que el DM confirme alguna condición'],
   pasiva:    [400, 'Elige una habilidad de la forma evolucionada'],
+  pendientes:[409, 'Primero aplica las mejoras de subida de nivel'],
 }
 
 const responder = (res, r) => {
