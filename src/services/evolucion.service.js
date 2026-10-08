@@ -110,9 +110,6 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
   const pasivaEraOculta = pasivaId != null && [1, 2, 3, 4].some(n =>
     Number(pp[`old_ab_${n}`]) === pasivaId && Number(pp[`old_ab_${n}_hidden`]) === 1)
 
-  const pospuesta = pp.personaje_pokemon_evo_pospuesta_nivel != null
-    && ctx.nivel <= Number(pp.personaje_pokemon_evo_pospuesta_nivel)
-
   // Por decisión del DM (contra la regla 7 de poke5e), primero se aplican las
   // mejoras de subida de nivel y después la evolución: mientras quede alguna
   // sin aplicar, no se puede evolucionar. Así la tirada de HP y el pool de
@@ -148,14 +145,14 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
       soportada,
       efecto_especial: soportada ? null : e.evolution_effect_value,
       condiciones,
-      disponible: soportada && !pospuesta && !mejorasPendientes && condiciones.every(c => c.cumple !== false),
+      disponible: soportada && !mejorasPendientes && condiciones.every(c => c.cumple !== false),
       conserva_pasiva: conserva,
       pasivas_elegibles: elegibles,
       movimientos_nuevos: nuevos,
     }
   })
 
-  return { pp, ctx, stats, pasiva, pospuesta, mejorasPendientes, opciones, evos, sabidos, maxMoves }
+  return { pp, ctx, stats, pasiva, mejorasPendientes, opciones, evos, sabidos, maxMoves }
 }
 
 const statsBase = (stats) => Object.fromEntries(STAT_KEYS.map(k => [k, Number(stats[`pokemon_${k}`]) || 0]))
@@ -172,7 +169,6 @@ const opciones = async (id_personaje, id_personaje_pokemon) => {
     tope_stat: topeStat(c.ctx.nivel),
     hit_dice_actual: c.pp.pokemon_hit_dice,
     ac_actual: c.pp.personaje_pokemon_ac,
-    pospuesta: c.pospuesta,
     mejoras_pendientes: c.mejorasPendientes,
     stats: statsBase(c.stats),
     stats_bonus: Object.fromEntries(STAT_KEYS.map(k => [k, Number(c.stats[`pokemon_${k}_bonus`]) || 0])),
@@ -203,7 +199,6 @@ const evolucionar = async (id_personaje, id_personaje_pokemon, { evolution_id, s
     const c = await contexto(id_personaje, id_personaje_pokemon, run)
     const op = c.opciones.find(o => o.evolution_id === Number(evolution_id))
     if (!op) return { error: 'opcion' }
-    if (c.pospuesta) return { error: 'pospuesta' }
     if (c.mejorasPendientes) return { error: 'pendientes' }
     if (!op.soportada) return { error: 'especial' }
     if (op.condiciones.some(x => x.cumple === false)) return { error: 'condicion' }
@@ -269,8 +264,7 @@ const evolucionar = async (id_personaje, id_personaje_pokemon, { evolution_id, s
          pokemon_sense_2_name = $16, pokemon_sense_2_value = $17,
          personaje_pokemon_type_1 = $18, personaje_pokemon_type_2 = $19,
          pokemon_saving_throw_prof = $20,
-         pokemon_apodo = CASE WHEN $21 THEN $22 ELSE pokemon_apodo END,
-         personaje_pokemon_evo_pospuesta_nivel = NULL
+         pokemon_apodo = CASE WHEN $21 THEN $22 ELSE pokemon_apodo END
        WHERE id_personaje_pokemon = $1
        RETURNING pokemon_apodo`,
       [
@@ -343,14 +337,4 @@ const evolucionar = async (id_personaje, id_personaje_pokemon, { evolution_id, s
   })
 }
 
-/** Posponer: no puede volver a evolucionar hasta subir otro nivel. */
-const posponer = async (id_personaje, id_personaje_pokemon) => {
-  const { rows } = await query(
-    `UPDATE ${TPP} SET personaje_pokemon_evo_pospuesta_nivel = pokemon_level
-      WHERE id_personaje_pokemon = $1 AND id_personaje = $2
-      RETURNING personaje_pokemon_evo_pospuesta_nivel AS nivel`,
-    [id_personaje_pokemon, id_personaje])
-  return rows[0] ? { ok: true, nivel: rows[0].nivel } : { error: 'notfound' }
-}
-
-module.exports = { opciones, evolucionar, posponer }
+module.exports = { opciones, evolucionar }

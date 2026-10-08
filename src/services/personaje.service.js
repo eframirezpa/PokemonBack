@@ -538,10 +538,9 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
             -- endpoint de opciones al abrir la ventana.
             EXISTS (SELECT 1 FROM "${SCHEMA}"."evolution" e
                      WHERE e.evolution_from_pokemon_id = pp.id_pokemon) AS tiene_evolucion,
-            (COALESCE(pp.personaje_pokemon_evo_pospuesta_nivel, 0) < pp.pokemon_level
-             -- Primero van las mejoras de nivel (decisión del DM): sin brillo
+            (-- Primero van las mejoras de nivel (decisión del DM): sin brillo
              -- mientras quede alguna pendiente
-             AND NOT EXISTS (SELECT 1 FROM "${SCHEMA}"."personaje_pokemon_pending_improvement" pi
+             NOT EXISTS (SELECT 1 FROM "${SCHEMA}"."personaje_pokemon_pending_improvement" pi
                               WHERE pi.personaje_pokemon_pending_improvement_pokemon_id = pp.id_personaje_pokemon
                                 AND pi.personaje_pokemon_pending_improvement_applied = false)
              AND EXISTS (SELECT 1 FROM "${SCHEMA}"."evolution" e

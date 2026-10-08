@@ -3,7 +3,6 @@ const svc = require('../services/evolucion.service')
 const ERRORES = {
   notfound:  [404, 'Pokémon no encontrado'],
   opcion:    [400, 'Esa evolución no corresponde a este Pokémon'],
-  pospuesta: [409, 'Pospusiste la evolución en este nivel; podrás evolucionar al subir de nivel'],
   especial:  [400, 'Esta evolución tiene un efecto especial que debe resolver el DM'],
   condicion: [400, 'No se cumplen las condiciones de la evolución'],
   confirmar: [400, 'Falta que el DM confirme alguna condición'],
@@ -39,9 +38,4 @@ const evolucionar = async (req, res, next) => {
   try { responder(res, await svc.evolucionar(req.params.id, req.params.idpp, req.body || {})) } catch (e) { next(e) }
 }
 
-// POST /api/personaje/:id/pokemon/:idpp/evolucion/posponer
-const posponer = async (req, res, next) => {
-  try { responder(res, await svc.posponer(req.params.id, req.params.idpp)) } catch (e) { next(e) }
-}
-
-module.exports = { getOpciones, evolucionar, posponer }
+module.exports = { getOpciones, evolucionar }

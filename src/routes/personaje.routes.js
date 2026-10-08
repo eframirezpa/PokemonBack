@@ -79,10 +79,9 @@ router.patch('/:id/pokemon/:idpp/apodo',       authenticate, ctrl.renamePokemon)
 router.patch('/:id/pokemon/:idpp/moves/:idrow/pp', authenticate, ctrl.spendMovePP)
 router.put('/:id/pokemon/:idpp/moves/:idrow/pp',   authenticate, ctrl.setMovePP)
 router.post('/:id/pokemon/:idpp/transfer',     authenticate, ctrl.transferPokemon)
-// Evolución: opciones con sus condiciones, evolucionar y posponer
+// Evolución: opciones con sus condiciones y evolucionar
 router.get('/:id/pokemon/:idpp/evolucion',           authenticate, evoCtrl.getOpciones)
 router.post('/:id/pokemon/:idpp/evolucion',          authenticate, evoCtrl.evolucionar)
-router.post('/:id/pokemon/:idpp/evolucion/posponer', authenticate, evoCtrl.posponer)
 router.delete('/:id/pokemon/:idpp',            authenticate, ctrl.releasePokemon)
 // Objetos equipados por el Pokemon
 router.get('/:id/pokemon/:idpp/held-items',          authenticate, heldItemCtrl.getHeldItems)
