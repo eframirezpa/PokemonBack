@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { srCaptura, claveBola, calcularDC, sacudidas } = require('../src/lib/captura')
+const { srCaptura, claveBola, calcularDC } = require('../src/lib/captura')
 
 const base = { nivel: 5, sr: '5', hpActual: 40, hpMax: 40, bola: 'Poké Ball', tipos: ['Fire'], tamanio: 'Medium', nivelEntrenador: 3 }
 
@@ -64,11 +64,4 @@ test('el desglose suma la DC', () => {
   const r = calcularDC({ ...base, hpActual: 3, bola: 'Great Ball' })
   assert.strictEqual(r.desglose.reduce((a, d) => a + d.valor, 0), r.dc)
   assert.strictEqual(r.dc, 5)
-})
-
-test('sacudidas según lo cerca que estuvo', () => {
-  assert.strictEqual(sacudidas(true, 30, 10), 3)
-  assert.strictEqual(sacudidas(false, 18, 20), 2)
-  assert.strictEqual(sacudidas(false, 15, 20), 1)
-  assert.strictEqual(sacudidas(false, 5, 20), 0)
 })

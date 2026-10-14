@@ -94,17 +94,4 @@ const calcularDC = (ctx) => {
   return { automatica: false, dc: desglose.reduce((a, d) => a + d.valor, 0), desglose }
 }
 
-/**
- * Cuántas veces se balancea la pokébola antes del desenlace: tres si lo
- * atrapó; si escapó, más cuanto más cerca estuvo la tirada. Es solo para la
- * animación, pero se decide aquí para que toda la mesa vea lo mismo.
- */
-const sacudidas = (exito, total, dc) => {
-  if (exito) return 3
-  const falta = (Number(dc) || 0) - (Number(total) || 0)
-  if (falta <= 2) return 2
-  if (falta <= 5) return 1
-  return 0
-}
-
-module.exports = { srCaptura, claveBola, calcularDC, sacudidas, entero }
+module.exports = { srCaptura, claveBola, calcularDC, entero }

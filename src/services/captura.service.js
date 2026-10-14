@@ -6,7 +6,7 @@
 // pueden atrapar el mismo Pokémon, y una pokébola nunca se gasta en un
 // Pokémon que ya no estaba.
 const { query, transaction, SCHEMA } = require('../config/db')
-const { calcularDC, sacudidas, entero } = require('../lib/captura')
+const { calcularDC, entero } = require('../lib/captura')
 const { healingAtLevel } = require('../lib/hp')
 const { transferirConCliente } = require('./master_pokemon.service')
 const logSvc = require('./partida_log.service')
@@ -145,7 +145,6 @@ const capturar = async (id_partida, user_id, body = {}) => {
     return {
       exito, total, d20, bono, ventaja: !!body.ventaja,
       dc: calc.dc, automatica: calc.automatica, desglose: calc.desglose,
-      sacudidas: calc.automatica ? 3 : sacudidas(exito, total, calc.dc),
       uid: String(poke.id_campo),
       oculto: !!poke.campo_hidden,
       pokemon: poke.pokemon_apodo || poke.pokemon_name,
