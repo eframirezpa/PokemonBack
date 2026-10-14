@@ -30,7 +30,7 @@ const textoCondicion = (tipo, valor) => {
  * true / false si la app la puede verificar, null si la confirma el DM (hora
  * del día, condiciones especiales, o un item que no existe en el catálogo).
  * ctx = { nivel, genero, bondLevel, moveClaves:Set, moveTipos:Set,
- *         itemClaves:Set (los que tiene en la mochila),
+ *         itemClaves:Set (los de la mochila y los que lleva equipados),
  *         itemsCatalogoClaves:Set (todos los del catálogo) }
  */
 const evaluarCondiciones = (evo, ctx) => {

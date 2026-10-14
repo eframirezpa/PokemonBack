@@ -118,6 +118,24 @@ const setMapaPin = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// GET /api/partida/:id/clima → el clima de combate (lo lee toda la mesa)
+const getClima = async (req, res, next) => {
+  try {
+    const r = await svc.findClima(req.params.id)
+    if (r.error) return res.status(404).json({ error: 'Partida no encontrada' })
+    res.json({ clima: r.clima })
+  } catch (e) { next(e) }
+}
+
+// PATCH /api/partida/:id/clima  { clima }  (null = sin clima; solo el máster dueño)
+const setClima = async (req, res, next) => {
+  try {
+    const r = await svc.setClima(req.params.id, req.user.user_id, req.body?.clima ?? null)
+    if (r.error) return res.status(404).json({ error: 'Partida no encontrada' })
+    res.json({ clima: r.clima })
+  } catch (e) { next(e) }
+}
+
 // ── Iniciativa ──
 // GET: lo lee cualquiera de la mesa. Escribir tiene dos puertas: el máster
 // maneja la ronda entera, y cada jugador solo puede apuntar SU tirada.
@@ -202,4 +220,4 @@ const intercambiarIniciativa = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { avanzarTurno, getMisPartidas, getByOwner, getById, create, update, toggleActivada, getMapaPin, setMapaPin, getIniciativa, abrirIniciativa, setIniciativa, tirarIniciativa, intercambiarIniciativa }
+module.exports = { getClima, setClima, avanzarTurno, getMisPartidas, getByOwner, getById, create, update, toggleActivada, getMapaPin, setMapaPin, getIniciativa, abrirIniciativa, setIniciativa, tirarIniciativa, intercambiarIniciativa }

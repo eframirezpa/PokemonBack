@@ -2,6 +2,7 @@
 // sobreviva a un refresco o una reconexión. Antes solo vivía en memoria de
 // cada navegador, repartido por broadcast de Supabase.
 const { query, SCHEMA } = require('../config/db')
+const { sesionAnterior, resumir } = require('../lib/sesiones')
 
 const T = `"${SCHEMA}"."partida_log"`
 
@@ -9,6 +10,15 @@ const T = `"${SCHEMA}"."partida_log"`
 // sesión de mesa, y evita que una partida vieja y larga tarde en cargar.
 const LIMIT = 300
 const MAX_TEXTO = 500
+// Tipos válidos de línea (migración 0006). Cualquier otro se guarda como NULL.
+const TIPOS = new Set(['captura', 'evolucion', 'nivel', 'pokemon', 'item', 'ataque', 'aparicion', 'tirada', 'mensaje'])
+// Para el resumen de la sesión anterior basta con lo más reciente: aun en una
+// campaña larga, la sesión anterior cae dentro de estas líneas.
+const LIMIT_RESUMEN = 3000
+
+// El texto que le toca a quien consulta (ver migración 0004)
+const TEXTO_SEGUN_ROL = `CASE WHEN $2 AND partida_log_texto_master IS NOT NULL
+                 THEN partida_log_texto_master ELSE partida_log_texto END`
 
 /**
  * Los ataques de un Pokémon oculto llevan dos versiones (ver migración
@@ -17,9 +27,8 @@ const MAX_TEXTO = 500
 const listar = async (id_partida, esMaster) => {
   const { rows } = await query(
     `SELECT id_partida_log AS id,
-            CASE WHEN $2 AND partida_log_texto_master IS NOT NULL
-                 THEN partida_log_texto_master ELSE partida_log_texto END AS texto,
-            partida_log_role AS role, partida_log_created_at AS time
+            ${TEXTO_SEGUN_ROL} AS texto,
+            partida_log_role AS role, partida_log_tipo AS tipo, partida_log_created_at AS time
        FROM ${T}
       WHERE id_partida = $1
       ORDER BY id_partida_log DESC
@@ -33,16 +42,30 @@ const listar = async (id_partida, esMaster) => {
  * a sendActivity/sendAttack), una sola vez -no cada cliente que la recibe por
  * broadcast-, para no duplicar filas por cada persona conectada.
  */
-const agregar = async (id_partida, { texto, texto_master, role }) => {
+const agregar = async (id_partida, { texto, texto_master, role, tipo }) => {
   const limpio = String(texto ?? '').trim()
   if (!limpio) return { error: 'texto' }
   const real = String(texto_master ?? '').trim()
   const { rows } = await query(
-    `INSERT INTO ${T} (id_partida, partida_log_texto, partida_log_texto_master, partida_log_role)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO ${T} (id_partida, partida_log_texto, partida_log_texto_master, partida_log_role, partida_log_tipo)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING id_partida_log AS id, partida_log_created_at AS time`,
-    [id_partida, limpio.slice(0, MAX_TEXTO), real ? real.slice(0, MAX_TEXTO) : null, String(role || 'master').slice(0, 20)])
+    [id_partida, limpio.slice(0, MAX_TEXTO), real ? real.slice(0, MAX_TEXTO) : null,
+     String(role || 'master').slice(0, 20), TIPOS.has(tipo) ? tipo : null])
   return rows[0]
 }
 
-module.exports = { listar, agregar }
+/** Resumen de la sesión anterior (ver lib/sesiones.js), con el texto según el rol. */
+const resumenSesionAnterior = async (id_partida, esMaster) => {
+  const { rows } = await query(
+    `SELECT id_partida_log AS id, ${TEXTO_SEGUN_ROL} AS texto,
+            partida_log_tipo AS tipo, partida_log_created_at AS time
+       FROM ${T}
+      WHERE id_partida = $1
+      ORDER BY id_partida_log DESC
+      LIMIT ${LIMIT_RESUMEN}`,
+    [id_partida, !!esMaster])
+  return { sesion: resumir(sesionAnterior(rows.reverse())) }
+}
+
+module.exports = { listar, agregar, resumenSesionAnterior }

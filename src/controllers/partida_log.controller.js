@@ -7,7 +7,14 @@ const getLog = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-// POST /api/partida/:id/log  { texto, texto_master?, role }
+// GET /api/partida/:id/log/resumen → lo que pasó en la sesión anterior
+const getResumen = async (req, res, next) => {
+  try {
+    res.json(await svc.resumenSesionAnterior(req.params.id, req.user.role === 'master'))
+  } catch (e) { next(e) }
+}
+
+// POST /api/partida/:id/log  { texto, texto_master?, role, tipo? }
 const agregarLog = async (req, res, next) => {
   try {
     const r = await svc.agregar(req.params.id, req.body || {})
@@ -16,4 +23,4 @@ const agregarLog = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { getLog, agregarLog }
+module.exports = { getLog, agregarLog, getResumen }

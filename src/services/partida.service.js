@@ -131,6 +131,27 @@ const setMapaPin = async (id_partida, owner_id, pin) => {
   return { pin: pinDeFila(rows[0]) }
 }
 
+// ── Clima de combate ─────────────────────────────────────────────────────────
+// Los climas de poke5e (rules/weather). Cualquier otro valor se guarda como
+// "sin clima".
+const CLIMAS = ['sol', 'lluvia', 'arena', 'granizo', 'nieve', 'niebla']
+
+const findClima = async (id_partida) => {
+  const { rows } = await query(`SELECT partida_clima FROM ${T} WHERE id_partida = $1`, [id_partida])
+  if (!rows.length) return { error: 'notfound' }
+  return { clima: rows[0].partida_clima ?? null }
+}
+
+const setClima = async (id_partida, owner_id, clima) => {
+  const valor = CLIMAS.includes(clima) ? clima : null
+  const { rows } = await query(
+    `UPDATE ${T} SET partida_clima = $3, updated_at = now()
+      WHERE id_partida = $1 AND owner_partida = $2
+      RETURNING partida_clima`, [id_partida, owner_id, valor])
+  if (!rows.length) return { error: 'notfound' }
+  return { clima: rows[0].partida_clima ?? null }
+}
+
 // ── Iniciativa ──────────────────────────────────────────────────────────────
 // El orden de turno de la partida, guardado entero en una columna JSON: se
 // reemplaza completo en cada cambio y nunca se consulta por dentro. Lo que se
@@ -343,4 +364,4 @@ const avanzarTurno = async (id_partida, user_id, esMaster, direccion = 'siguient
   return guardarIniciativa(id_partida, { ...ini, turno: siguiente, ronda })
 }
 
-module.exports = { avanzarTurno, findActiveByUser, findByOwner, findById, create, updateSprites, update, toggleActivada, remove, findMapaPin, setMapaPin, findIniciativa, guardarIniciativa, abrirIniciativa, tirarIniciativa, intercambiarIniciativa }
+module.exports = { findClima, setClima, avanzarTurno, findActiveByUser, findByOwner, findById, create, updateSprites, update, toggleActivada, remove, findMapaPin, setMapaPin, findIniciativa, guardarIniciativa, abrirIniciativa, tirarIniciativa, intercambiarIniciativa }

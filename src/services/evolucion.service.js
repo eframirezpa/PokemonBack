@@ -28,6 +28,7 @@ const TIT   = `"${SCHEMA}"."items"`
 const TBOND = `"${SCHEMA}"."bonds"`
 const TTYP  = `"${SCHEMA}"."pokemon_types"`
 const TPPI  = `"${SCHEMA}"."personaje_pokemon_pending_improvement"`
+const TPPHI = `"${SCHEMA}"."personaje_pokemon_held_item"`
 
 const norm = s => String(s || '').toLowerCase().trim()
 const splitList = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean)
@@ -52,6 +53,8 @@ const unirLista = (a, b) => {
 const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
   const { rows: ppRows } = await run(
     `SELECT pp.*, pk.pokemon_name AS especie,
+            pk.pokemon_media_main AS especie_main, pk.pokemon_media_main_shiny AS especie_main_shiny,
+            pk.pokemon_media_sprite AS especie_sprite,
             ${[1, 2, 3, 4].map(n => `pk.pokemon_ability_${n} AS old_ab_${n}, pk.pokemon_ability_${n}_is_hidden AS old_ab_${n}_hidden`).join(', ')},
             b.bond_level
        FROM ${TPP} pp
@@ -69,6 +72,11 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
           ORDER BY pm.personaje_pokemon_moves_id`, [id_personaje_pokemon]).then(r => r.rows)
   const mochila = await run(`SELECT i.item_name FROM ${TEQ} eq JOIN ${TIT} i ON i.item_id = eq.id_item
           WHERE eq.id_personaje = $1 AND eq.personaje_equipo_cantidad > 0`, [id_personaje]).then(r => r.rows)
+  // Lo que lleva equipado ESTE Pokémon: equipar saca el item de la mochila, y
+  // varios de evolución (Metal Coat, Dragon Scale...) se llevan equipados.
+  const equipados = await run(`SELECT i.item_name FROM ${TPPHI} hi JOIN ${TIT} i ON i.item_id = hi.personaje_pokemon_held_item_id_item
+          WHERE hi.personaje_pokemon_held_item_id_pokemon = $1`, [id_personaje_pokemon]).then(r => r.rows)
+  const equipadosClaves = new Set(equipados.map(i => claveMove(i.item_name)))
   const catalogo = await run(`SELECT item_name FROM ${TIT}`).then(r => r.rows)
   const stats = await run(`SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [id_personaje_pokemon]).then(r => r.rows[0] || {})
   const pasiva = await run(`SELECT pa.id_abilitie, a.ability_name FROM ${TPPA} pa LEFT JOIN ${TABI} a ON a.ability_id = pa.id_abilitie
@@ -82,7 +90,7 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
     bondLevel: pp.bond_level != null ? Number(pp.bond_level) : null,
     moveClaves: new Set(moves.map(m => claveMove(m.move_name))),
     moveTipos: new Set(moves.map(m => norm(m.move_type)).filter(Boolean)),
-    itemClaves: new Set(mochila.map(i => claveMove(i.item_name))),
+    itemClaves: new Set([...mochila.map(i => claveMove(i.item_name)), ...equipadosClaves]),
     itemsCatalogoClaves: new Set(catalogo.map(i => claveMove(i.item_name))),
   }
 
@@ -121,7 +129,9 @@ const contexto = async (id_personaje, id_personaje_pokemon, run = query) => {
   const mejorasPendientes = pend.length > 0
 
   const opciones = evos.map(e => {
-    const condiciones = evaluarCondiciones(e, ctx)
+    // Si el item lo lleva equipado, se avisa: es de ahí de donde se gasta
+    const condiciones = evaluarCondiciones(e, ctx).map(c => (c.tipo === 'item' && c.cumple && equipadosClaves.has(claveMove(c.valor)))
+      ? { ...c, equipado: true, texto: `${c.texto} (lo lleva equipado)` } : c)
     const habs = habilidadesDe(e)
     const conserva = pasivaId == null || habs.some(a => a.id === pasivaId)
     const elegibles = habs
@@ -163,6 +173,9 @@ const opciones = async (id_personaje, id_personaje_pokemon) => {
   if (!c) return { error: 'notfound' }
   return {
     especie: c.pp.especie,
+    // Para la animación de evolución: la forma actual, shiny si corresponde
+    sprite_actual: (c.pp.pokemon_is_shiny && c.pp.especie_main_shiny) ? c.pp.especie_main_shiny
+      : (c.pp.especie_main || c.pp.especie_sprite),
     apodo: c.pp.pokemon_apodo,
     nivel: c.ctx.nivel,
     hp_ganado: 2 * c.ctx.nivel,
@@ -230,9 +243,17 @@ const evolucionar = async (id_personaje, id_personaje_pokemon, { evolution_id, s
     const nivel = c.ctx.nivel
     const hpGanado = 2 * nivel
 
-    // 1. El item de la condición se consume (1 unidad de la mochila)
+    // 1. El item de la condición se consume: primero el que lleva equipado el
+    // Pokémon; si no lo lleva, 1 unidad de la mochila.
     for (const cond of op.condiciones) {
       if (cond.tipo !== 'item' || cond.cumple !== true) continue
+      const { rowCount: delEquipado } = await run(
+        `DELETE FROM ${TPPHI} WHERE personaje_pokemon_held_item_id = (
+            SELECT hi.personaje_pokemon_held_item_id FROM ${TPPHI} hi JOIN ${TIT} i ON i.item_id = hi.personaje_pokemon_held_item_id_item
+             WHERE hi.personaje_pokemon_held_item_id_pokemon = $1 AND ${SQL_CLAVE_MOVE('i.item_name')} = $2
+             ORDER BY hi.personaje_pokemon_held_item_id LIMIT 1)`,
+        [id_personaje_pokemon, claveMove(cond.valor)])
+      if (delEquipado) continue
       const { rowCount } = await run(
         `UPDATE ${TEQ} SET personaje_equipo_cantidad = personaje_equipo_cantidad - 1
           WHERE id_personaje_equipo = (
