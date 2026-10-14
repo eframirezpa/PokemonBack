@@ -5,6 +5,7 @@ const upCtrl  = require('../controllers/usuarios_partida.controller')
 const campoCtrl = require('../controllers/master_campo.controller')
 const terrenoCtrl = require('../controllers/terreno.controller')
 const logCtrl = require('../controllers/partida_log.controller')
+const capturaCtrl = require('../controllers/captura.controller')
 const { authenticate, requireRole } = require('../middleware/auth.middleware')
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -21,6 +22,9 @@ router.get('/mis-partidas', authenticate, ctrl.getMisPartidas)
 // máster y va más abajo.
 router.get('/:id/mapa-pin', authenticate, ctrl.getMapaPin)
 router.get('/:id/clima',    authenticate, ctrl.getClima)
+router.get('/:id/captura-auto', authenticate, capturaCtrl.getCapturaAuto)
+// Captura automática: la pide el entrenador que lanza; el servidor resuelve
+router.post('/:id/captura',     authenticate, capturaCtrl.capturar)
 // La iniciativa la lee toda la mesa, y cada quien apunta SU tirada (el
 // controlador arma la clave con su propio id, nadie tira por otro).
 router.get('/:id/iniciativa',            authenticate, ctrl.getIniciativa)
@@ -51,6 +55,7 @@ router.put('/:id',        sprites,     ...master, ctrl.update)
 router.patch('/:id/toggle',            ...master, ctrl.toggleActivada)
 router.patch('/:id/mapa-pin',          ...master, ctrl.setMapaPin)
 router.patch('/:id/clima',             ...master, ctrl.setClima)
+router.patch('/:id/captura-auto',      ...master, capturaCtrl.setCapturaAuto)
 // Terrenos: solo los pone el máster; se leen desde la party
 router.patch('/:id/terreno/personaje/:idp', ...master, terrenoCtrl.setPersonaje)
 router.patch('/:id/terreno/pokemon/:idpp',  ...master, terrenoCtrl.setPokemon)

@@ -628,137 +628,144 @@ const TPPFB  = `"${SCHEMA}"."personaje_pokemon_feat_bonus"`
 const TPERS  = `"${SCHEMA}"."personaje"`
 const TPPHI  = `"${SCHEMA}"."personaje_pokemon_held_item"`
 
-const transferToPersonaje = async (id_master, id_master_pokemon, id_personaje) => {
-  return transaction(async (client) => {
-    const { rows: mp } = await client.query(
-      `SELECT mp.*, pk.pokemon_name FROM ${TMP} mp
-       JOIN ${TPOKEDEX} pk ON pk.pokemon_id = mp.id_pokemon
-       WHERE mp.id_master_pokemon = $1 AND mp.id_master = $2`,
-      [id_master_pokemon, id_master])
-    if (!mp.length) return { error: 'notfound' }
-    const origen = mp[0]
+const transferToPersonaje = (id_master, id_master_pokemon, id_personaje) =>
+  transaction(client => transferirConCliente(client, id_master, id_master_pokemon, id_personaje))
 
-    const { rows: per } = await client.query(
-      `SELECT nombre_personaje FROM ${TPERS} WHERE id_personaje = $1`, [id_personaje])
-    if (!per.length) return { error: 'personajenotfound' }
+/**
+ * La transferencia en sí, sobre un cliente de transacción ya abierto. Vive
+ * aparte porque la captura automática (captura.service.js) la necesita dentro
+ * de SU transacción: descontar la pokébola y pasar el Pokémon tienen que
+ * confirmarse o deshacerse juntos.
+ */
+const transferirConCliente = async (client, id_master, id_master_pokemon, id_personaje) => {
+  const { rows: mp } = await client.query(
+    `SELECT mp.*, pk.pokemon_name FROM ${TMP} mp
+     JOIN ${TPOKEDEX} pk ON pk.pokemon_id = mp.id_pokemon
+     WHERE mp.id_master_pokemon = $1 AND mp.id_master = $2`,
+    [id_master_pokemon, id_master])
+  if (!mp.length) return { error: 'notfound' }
+  const origen = mp[0]
 
-    // ── 1. El Pokémon. Va al cinturón si quedan ranuras libres (personaje_pokeslots);
-    //       si está lleno cae en la femputadora. Nunca llega invocado, para no chocar
-    //       con el que el trainer tenga en juego.
-    const { rows: slotRows } = await client.query(
-      `SELECT personaje_pokeslots FROM ${TPERS} WHERE id_personaje = $1`, [id_personaje])
-    const slots = Number(slotRows[0]?.personaje_pokeslots)
-    const maxSlots = Number.isFinite(slots) && slots >= 0 ? slots : 3
-    const { rows: cntRows } = await client.query(
-      `SELECT COUNT(*)::int AS c FROM ${TPP} WHERE id_personaje = $1 AND pokemon_en_equipo = true`, [id_personaje])
-    const alCinturon = cntRows[0].c < maxSlots
+  const { rows: per } = await client.query(
+    `SELECT nombre_personaje FROM ${TPERS} WHERE id_personaje = $1`, [id_personaje])
+  if (!per.length) return { error: 'personajenotfound' }
 
-    const cols = TRANSFER_COLS.join(', ')
-    const refs = TRANSFER_COLS.map(c => `o.${c}`).join(', ')
-    const { rows: ins } = await client.query(
-      // El aporte a los pokelvls lo decide pokemon_tag, que viaja en ${cols}:
-      // lo que crea el máster llega como 'created' y queda topado al nivel del
-      // entrenador.
-      `INSERT INTO ${TPP} (id_personaje, pokemon_en_equipo, personaje_pokemon_is_in_game, pokemon_needs_rename, ${cols})
-       SELECT $2, $3, false, true, ${refs} FROM ${TMP} o WHERE o.id_master_pokemon = $1
-       RETURNING id_personaje_pokemon`,
-      [id_master_pokemon, id_personaje, alCinturon])
-    const nuevoId = ins[0].id_personaje_pokemon
+  // ── 1. El Pokémon. Va al cinturón si quedan ranuras libres (personaje_pokeslots);
+  //       si está lleno cae en la femputadora. Nunca llega invocado, para no chocar
+  //       con el que el trainer tenga en juego.
+  const { rows: slotRows } = await client.query(
+    `SELECT personaje_pokeslots FROM ${TPERS} WHERE id_personaje = $1`, [id_personaje])
+  const slots = Number(slotRows[0]?.personaje_pokeslots)
+  const maxSlots = Number.isFinite(slots) && slots >= 0 ? slots : 3
+  const { rows: cntRows } = await client.query(
+    `SELECT COUNT(*)::int AS c FROM ${TPP} WHERE id_personaje = $1 AND pokemon_en_equipo = true`, [id_personaje])
+  const alCinturon = cntRows[0].c < maxSlots
 
-    // ── 2. Stats
+  const cols = TRANSFER_COLS.join(', ')
+  const refs = TRANSFER_COLS.map(c => `o.${c}`).join(', ')
+  const { rows: ins } = await client.query(
+    // El aporte a los pokelvls lo decide pokemon_tag, que viaja en ${cols}:
+    // lo que crea el máster llega como 'created' y queda topado al nivel del
+    // entrenador.
+    `INSERT INTO ${TPP} (id_personaje, pokemon_en_equipo, personaje_pokemon_is_in_game, pokemon_needs_rename, ${cols})
+     SELECT $2, $3, false, true, ${refs} FROM ${TMP} o WHERE o.id_master_pokemon = $1
+     RETURNING id_personaje_pokemon`,
+    [id_master_pokemon, id_personaje, alCinturon])
+  const nuevoId = ins[0].id_personaje_pokemon
+
+  // ── 2. Stats
+  await client.query(
+    `INSERT INTO ${TPPS} (id_personaje_pokemon, pokemon_dex, pokemon_str, pokemon_con,
+       pokemon_int, pokemon_wis, pokemon_cha, pokemon_dex_bonus, pokemon_str_bonus,
+       pokemon_con_bonus, pokemon_int_bonus, pokemon_wis_bonus, pokemon_cha_bonus,
+       pokemon_stats_prof, pokemon_stats_dex_prof, pokemon_stats_int_prof,
+       pokemon_stats_str_prof, pokemon_stats_cha_prof, pokemon_stats_wis_prof, pokemon_stats_con_prof)
+     SELECT $2, s.pokemon_dex, s.pokemon_str, s.pokemon_con, s.pokemon_int, s.pokemon_wis,
+            s.pokemon_cha, s.pokemon_dex_bonus, s.pokemon_str_bonus, s.pokemon_con_bonus,
+            s.pokemon_int_bonus, s.pokemon_wis_bonus, s.pokemon_cha_bonus,
+            s.pokemon_stats_prof, s.pokemon_stats_dex_prof, s.pokemon_stats_int_prof,
+            s.pokemon_stats_str_prof, s.pokemon_stats_cha_prof, s.pokemon_stats_wis_prof, s.pokemon_stats_con_prof
+     FROM ${TMPS} s WHERE s.id_master_pokemon = $1`,
+    [id_master_pokemon, nuevoId])
+
+  // ── 3. Skills
+  await client.query(
+    `INSERT INTO ${TPPSK} (id_personaje_pokemon, id_skill, pokemon_skill_pref, pokemon_skill_expert)
+     SELECT $2, k.id_skill, k.pokemon_skill_pref, k.pokemon_skill_expert
+     FROM ${TMPSK} k WHERE k.id_master_pokemon = $1`,
+    [id_master_pokemon, nuevoId])
+
+  // ── 4. Movimientos. master_pokemon_moves no lleva PP -el máster no lo
+  //       necesita, sus Pokémon no gastan PP en su panel-, así que el PP se
+  //       trae del catálogo, igual que al crear un Pokémon o al reescribir su
+  //       moveset en una subida de nivel. Sin esto quedaban en 0, que el
+  //       juego lee como "PP ilimitado" para cualquier movimiento.
+  await client.query(
+    `INSERT INTO ${TPPM} (personaje_pokemon_moves_personaje_pokemon_id, personaje_pokemon_moves_move_id,
+                          personaje_pokemon_moves_current_pp, personaje_pokemon_moves_max_pp)
+     SELECT $2, m.master_pokemon_moves_move_id, COALESCE(mv.move_pp, 0), COALESCE(mv.move_pp, 0)
+     FROM ${TMPM} m
+     JOIN ${TMOVES} mv ON mv.move_id = m.master_pokemon_moves_move_id
+     WHERE m.master_pokemon_moves_master_pokemon_id = $1`,
+    [id_master_pokemon, nuevoId])
+
+  // ── 5. Pasivas
+  await client.query(
+    `INSERT INTO ${TPPP} (id_personaje_pokemon, id_abilitie)
+     SELECT $2, p.id_abilitie FROM ${TMPP} p WHERE p.id_master_pokemon = $1`,
+    [id_master_pokemon, nuevoId])
+
+  // ── 6. Feats con sus bonos: hay que ir uno a uno para reenlazar los bonos al feat nuevo
+  const { rows: feats } = await client.query(
+    `SELECT master_pokemon_feat_id, feat_id, personaje_feat_is_available
+     FROM ${TMPF} WHERE id_master_pokemon = $1 ORDER BY master_pokemon_feat_id`,
+    [id_master_pokemon])
+  for (const f of feats) {
+    const { rows: nf } = await client.query(
+      `INSERT INTO ${TPPF} (id_trainer_pokemon, feat_id, personaje_feat_is_available)
+       VALUES ($1, $2, $3) RETURNING personaje_pokemon_feat_id`,
+      [nuevoId, f.feat_id, f.personaje_feat_is_available])
     await client.query(
-      `INSERT INTO ${TPPS} (id_personaje_pokemon, pokemon_dex, pokemon_str, pokemon_con,
-         pokemon_int, pokemon_wis, pokemon_cha, pokemon_dex_bonus, pokemon_str_bonus,
-         pokemon_con_bonus, pokemon_int_bonus, pokemon_wis_bonus, pokemon_cha_bonus,
-         pokemon_stats_prof, pokemon_stats_dex_prof, pokemon_stats_int_prof,
-         pokemon_stats_str_prof, pokemon_stats_cha_prof, pokemon_stats_wis_prof, pokemon_stats_con_prof)
-       SELECT $2, s.pokemon_dex, s.pokemon_str, s.pokemon_con, s.pokemon_int, s.pokemon_wis,
-              s.pokemon_cha, s.pokemon_dex_bonus, s.pokemon_str_bonus, s.pokemon_con_bonus,
-              s.pokemon_int_bonus, s.pokemon_wis_bonus, s.pokemon_cha_bonus,
-              s.pokemon_stats_prof, s.pokemon_stats_dex_prof, s.pokemon_stats_int_prof,
-              s.pokemon_stats_str_prof, s.pokemon_stats_cha_prof, s.pokemon_stats_wis_prof, s.pokemon_stats_con_prof
-       FROM ${TMPS} s WHERE s.id_master_pokemon = $1`,
-      [id_master_pokemon, nuevoId])
+      `INSERT INTO ${TPPFB} (personaje_pokemon_feat_bonus_personaje_pokemon_feat_id,
+         personaje_pokemon_feat_bonus_type, personaje_pokemon_feat_bonus_llave,
+         personaje_pokemon_feat_bonus_value, personaje_pokemon_feat_bonus_is_available)
+       SELECT $2, b.master_pokemon_feat_bonus_type, b.master_pokemon_feat_bonus_llave,
+              b.master_pokemon_feat_bonus_value, b.master_pokemon_feat_bonus_is_available
+       FROM ${TMPFB} b WHERE b.master_pokemon_feat_bonus_master_pokemon_feat_id = $1`,
+      [f.master_pokemon_feat_id, nf[0].personaje_pokemon_feat_id])
+  }
 
-    // ── 3. Skills
+  // ── 7. Held item: no es una columna de personaje_pokemon, sino una fila en
+  //       su propia tabla (el Pokémon ya entrenado puede llevar varios, con
+  //       feats como Ambidextrous), así que se le crea la primera fila.
+  if (origen.personaje_pokemon_held_item != null) {
     await client.query(
-      `INSERT INTO ${TPPSK} (id_personaje_pokemon, id_skill, pokemon_skill_pref, pokemon_skill_expert)
-       SELECT $2, k.id_skill, k.pokemon_skill_pref, k.pokemon_skill_expert
-       FROM ${TMPSK} k WHERE k.id_master_pokemon = $1`,
-      [id_master_pokemon, nuevoId])
+      `INSERT INTO ${TPPHI} (personaje_pokemon_held_item_id_pokemon, personaje_pokemon_held_item_id_item)
+       VALUES ($1, $2)`,
+      [nuevoId, origen.personaje_pokemon_held_item])
+  }
 
-    // ── 4. Movimientos. master_pokemon_moves no lleva PP -el máster no lo
-    //       necesita, sus Pokémon no gastan PP en su panel-, así que el PP se
-    //       trae del catálogo, igual que al crear un Pokémon o al reescribir su
-    //       moveset en una subida de nivel. Sin esto quedaban en 0, que el
-    //       juego lee como "PP ilimitado" para cualquier movimiento.
-    await client.query(
-      `INSERT INTO ${TPPM} (personaje_pokemon_moves_personaje_pokemon_id, personaje_pokemon_moves_move_id,
-                            personaje_pokemon_moves_current_pp, personaje_pokemon_moves_max_pp)
-       SELECT $2, m.master_pokemon_moves_move_id, COALESCE(mv.move_pp, 0), COALESCE(mv.move_pp, 0)
-       FROM ${TMPM} m
-       JOIN ${TMOVES} mv ON mv.move_id = m.master_pokemon_moves_move_id
-       WHERE m.master_pokemon_moves_master_pokemon_id = $1`,
-      [id_master_pokemon, nuevoId])
+  // ── 8. Borrar del master. Las pasivas no tienen ON DELETE CASCADE, van aparte;
+  //       feats, bonos, moves, skills y stats caen solos con el registro padre.
+  await client.query(`DELETE FROM ${TMPP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
+  await client.query(`DELETE FROM ${TMP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
 
-    // ── 5. Pasivas
-    await client.query(
-      `INSERT INTO ${TPPP} (id_personaje_pokemon, id_abilitie)
-       SELECT $2, p.id_abilitie FROM ${TMPP} p WHERE p.id_master_pokemon = $1`,
-      [id_master_pokemon, nuevoId])
+  // El Pokémon que acaba de recibir cuenta para sus pokelvls
+  const nivel = await recalcularSeguro(id_personaje, (t, p) => client.query(t, p))
 
-    // ── 6. Feats con sus bonos: hay que ir uno a uno para reenlazar los bonos al feat nuevo
-    const { rows: feats } = await client.query(
-      `SELECT master_pokemon_feat_id, feat_id, personaje_feat_is_available
-       FROM ${TMPF} WHERE id_master_pokemon = $1 ORDER BY master_pokemon_feat_id`,
-      [id_master_pokemon])
-    for (const f of feats) {
-      const { rows: nf } = await client.query(
-        `INSERT INTO ${TPPF} (id_trainer_pokemon, feat_id, personaje_feat_is_available)
-         VALUES ($1, $2, $3) RETURNING personaje_pokemon_feat_id`,
-        [nuevoId, f.feat_id, f.personaje_feat_is_available])
-      await client.query(
-        `INSERT INTO ${TPPFB} (personaje_pokemon_feat_bonus_personaje_pokemon_feat_id,
-           personaje_pokemon_feat_bonus_type, personaje_pokemon_feat_bonus_llave,
-           personaje_pokemon_feat_bonus_value, personaje_pokemon_feat_bonus_is_available)
-         SELECT $2, b.master_pokemon_feat_bonus_type, b.master_pokemon_feat_bonus_llave,
-                b.master_pokemon_feat_bonus_value, b.master_pokemon_feat_bonus_is_available
-         FROM ${TMPFB} b WHERE b.master_pokemon_feat_bonus_master_pokemon_feat_id = $1`,
-        [f.master_pokemon_feat_id, nf[0].personaje_pokemon_feat_id])
-    }
-
-    // ── 7. Held item: no es una columna de personaje_pokemon, sino una fila en
-    //       su propia tabla (el Pokémon ya entrenado puede llevar varios, con
-    //       feats como Ambidextrous), así que se le crea la primera fila.
-    if (origen.personaje_pokemon_held_item != null) {
-      await client.query(
-        `INSERT INTO ${TPPHI} (personaje_pokemon_held_item_id_pokemon, personaje_pokemon_held_item_id_item)
-         VALUES ($1, $2)`,
-        [nuevoId, origen.personaje_pokemon_held_item])
-    }
-
-    // ── 8. Borrar del master. Las pasivas no tienen ON DELETE CASCADE, van aparte;
-    //       feats, bonos, moves, skills y stats caen solos con el registro padre.
-    await client.query(`DELETE FROM ${TMPP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
-    await client.query(`DELETE FROM ${TMP} WHERE id_master_pokemon = $1`, [id_master_pokemon])
-
-    // El Pokémon que acaba de recibir cuenta para sus pokelvls
-    const nivel = await recalcularSeguro(id_personaje, (t, p) => client.query(t, p))
-
-    return {
-      ok: true,
-      id_personaje_pokemon: nuevoId,
-      pokemon_name: origen.pokemon_name,
-      pokemon_apodo: origen.pokemon_apodo,
-      nombre_personaje: per[0].nombre_personaje,
-      en_equipo: alCinturon, // false = el cinturón estaba lleno y fue a la femputadora
-      nivel_entrenador: nivel,
-    }
-  })
+  return {
+    ok: true,
+    id_personaje_pokemon: nuevoId,
+    pokemon_name: origen.pokemon_name,
+    pokemon_apodo: origen.pokemon_apodo,
+    nombre_personaje: per[0].nombre_personaje,
+    en_equipo: alCinturon, // false = el cinturón estaba lleno y fue a la femputadora
+    nivel_entrenador: nivel,
+  }
 }
 
 module.exports = {
   findPokemon, findPokemonDetail, updatePokemonCombate, levelPreview, tagPorDefecto,
   setPokemonEnEquipo, setPokemonEnJuego, addPokemon, updatePokemon, removePokemon,
-  transferToPersonaje,
+  transferToPersonaje, transferirConCliente,
 }
