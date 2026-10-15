@@ -160,6 +160,13 @@ const capturar = async (id_partida, user_id, body = {}) => {
   const textos = textoCaptura(r)
   await logSvc.agregar(id_partida, { ...textos, role: 'trainer', tipo: 'captura' })
     .catch(() => { /* sin la línea del historial la captura igual vale */ })
+  // Si escapa, la DC no sale del servidor: ni en la respuesta ni en el texto
+  if (!r.exito) {
+    const { dc: _dc, desglose: _desglose, texto_master: _tm, ...publico } = { ...r, ...textos }
+    // Oculto: tampoco viaja su nombre real
+    if (r.oculto) publico.pokemon = '???'
+    return publico
+  }
   return { ...r, ...textos }
 }
 
@@ -167,18 +174,22 @@ const capturar = async (id_partida, user_id, body = {}) => {
  * La línea de actividad. Si el Pokémon estaba oculto y escapa, la mesa no
  * se entera de cuál era (texto); el máster sí (texto_master). Si lo atrapa,
  * se revela: ya es del entrenador.
+ *
+ * La DC solo se comparte si lo atrapa. Si escapa es información que la mesa
+ * no debe conocer: el texto lleva la tirada sin la DC, y el máster la ve
+ * completa en texto_master.
  */
 const textoCaptura = (r) => {
-  const tirada = r.automatica ? '' : ` (${r.d20}${r.ventaja ? ' con ventaja' : ''} ${signo(r.bono)} = ${r.total} contra DC ${r.dc})`
-  const lanzo = (nombre) => `${r.nombre_personaje} lanzó una ${r.bola.nombre} a ${nombre}${tirada}`
+  const tirada = (conDC) => r.automatica ? ''
+    : ` (${r.d20}${r.ventaja ? ' con ventaja' : ''} ${signo(r.bono)} = ${r.total}${conDC ? ` contra DC ${r.dc}` : ''})`
+  const lanzo = (nombre, conDC) => `${r.nombre_personaje} lanzó una ${r.bola.nombre} a ${nombre}${tirada(conDC)}`
   if (r.exito) {
-    const t = `${lanzo(r.pokemon)}: ¡lo atrapó!`
+    const t = `${lanzo(r.pokemon, true)}: ¡lo atrapó!`
     return { texto: t, texto_master: null }
   }
-  return {
-    texto: `${lanzo(r.oculto ? 'un Pokémon' : r.pokemon)}: se escapó.`,
-    texto_master: r.oculto ? `${lanzo(r.pokemon)}: se escapó.` : null,
-  }
+  const texto = `${lanzo(r.oculto ? 'un Pokémon' : r.pokemon, false)}: se escapó.`
+  const textoMaster = `${lanzo(r.pokemon, true)}: se escapó.`
+  return { texto, texto_master: textoMaster === texto ? null : textoMaster }
 }
 
 module.exports = { findCapturaAuto, setCapturaAuto, capturar, textoCaptura }
