@@ -532,7 +532,7 @@ const findPokemon = async (id_personaje, enEquipo = null) => {
             pp.pokemon_experiencia, pp.pokemon_en_equipo, pp.pokemon_is_shiny, pp.personaje_pokemon_is_in_game,
             pp.pokemon_tag, pp.personaje_pokemon_bond_points,
             pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny,
-            pk.pokemon_media_main, pk.pokemon_media_main_shiny,
+            pk.pokemon_media_main, pk.pokemon_media_main_shiny, pk.pokemon_size,
             -- Pistas para el botón Evolucionar de la tarjeta. evolucion_lista
             -- solo mira el nivel: las demás condiciones las verifica el
             -- endpoint de opciones al abrir la ventana.
@@ -677,7 +677,7 @@ const rutaDelPersonaje = async (id_personaje, personaje_path) => {
 
 const findPokemonDetail = async (id_personaje_pokemon) => {
   const { rows } = await query(
-    `SELECT pp.*, pk.pokemon_name, pk.pokemon_type_1, pk.pokemon_type_2, pk.pokemon_sr,
+    `SELECT pp.*, pk.pokemon_name, pk.pokemon_type_1, pk.pokemon_type_2, pk.pokemon_sr, pk.pokemon_size,
             pk.pokemon_media_main, pk.pokemon_media_main_shiny, pk.pokemon_media_sprite,
             n.nature_name, n.nature_effect_increase, n.nature_effect_increase_value,
             n.nature_effect_decrease, n.nature_effect_decrease_value,
