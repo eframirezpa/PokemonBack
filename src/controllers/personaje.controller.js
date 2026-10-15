@@ -60,6 +60,35 @@ const getEquipo = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+const ERRORES_TM = {
+  notfound:     [404, 'Item no encontrado'],
+  notm:         [400, 'Este item no es un TM'],
+  pokemon:      [400, 'Elige uno de tus Pokémon'],
+  incompatible: [400, 'Ese Pokémon no puede aprender este TM'],
+  yasabe:       [400, 'Ese Pokémon ya sabe ese movimiento'],
+  olvidar:      [400, 'Elige qué movimiento olvidar'],
+}
+
+// GET /api/personaje/:id/equipo/:idEquipo/tm
+const candidatosTm = async (req, res, next) => {
+  try {
+    const r = await require('../services/tm_uso.service').candidatos(req.params.id, req.params.idEquipo, req.user.user_id)
+    const err = ERRORES_TM[r.error]
+    if (err) return res.status(err[0]).json({ error: err[1] })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+// POST /api/personaje/:id/equipo/:idEquipo/tm  { id_personaje_pokemon, olvidar? }
+const usarTm = async (req, res, next) => {
+  try {
+    const r = await require('../services/tm_uso.service').usar(req.params.id, req.params.idEquipo, req.user.user_id, req.body || {})
+    const err = ERRORES_TM[r.error]
+    if (err) return res.status(err[0]).json({ error: err[1] })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
 // POST /api/personaje/:id/equipo/:idEquipo/usar  { tipo, id_personaje, id_personaje_pokemon?, tirada? }
 const usarItemCurativo = async (req, res, next) => {
   try {
@@ -530,7 +559,7 @@ const setEstadosPokemon = async (req, res, next) => {
 }
 
 module.exports = {
-  usarItemCurativo,
+  usarItemCurativo, candidatosTm, usarTm,
   setEstados, setEstadosPokemon,
   getMine, getParty, getById, getFull, updateCombate, updatePokemonCombate,
   getEquipo, addEquipo, updateEquipo,
