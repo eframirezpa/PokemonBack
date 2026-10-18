@@ -1010,7 +1010,7 @@ const setPokemonEnEquipo = async (id_personaje, id_personaje_pokemon, enEquipo) 
 // Pokémon recién recibidos que aún esperan que su dueño los renombre.
 const pendingRenames = async (id_personaje) => {
   const { rows } = await query(
-    `SELECT pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_level,
+    `SELECT pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_level, pp.personaje_pokemon_genero,
             pk.pokemon_name, pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pp.pokemon_is_shiny
        FROM ${TPP} pp JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
       WHERE pp.id_personaje = $1 AND pp.pokemon_needs_rename = true
