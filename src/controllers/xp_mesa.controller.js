@@ -13,6 +13,9 @@ const ERRORES = {
   cantidad:  [400, 'Cantidad inválida'],
   repetido:  [400, 'Entrenador repetido'],
   excede:    [400, 'El reparto pasa del total'],
+  pokemonajeno: [403, 'Ese Pokémon no es tuyo'],
+  suma:      [400, 'El reparto debe sumar exactamente tu parte'],
+  mejoras:   [409, 'Completa primero las mejoras del nivel de ese Pokémon'],
 }
 const responder = (res, r, ok = 200) => {
   if (r?.error) {
@@ -70,4 +73,18 @@ const pendientesEntrenador = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
-module.exports = { registrarIntervencion, crearXp, pendientesDm, confirmar, manual, pendientesEntrenador }
+// POST /api/partida/:id/xp/reparto/:idr/asignar { asignacion: [{ id_personaje_pokemon, xp }] }
+const asignarReparto = async (req, res, next) => {
+  try {
+    responder(res, await svc.asignarReparto(Number(req.params.id), req.user.user_id, Number(req.params.idr), req.body?.asignacion))
+  } catch (e) { next(e) }
+}
+
+// POST /api/partida/:id/xp/personaje/:idp/guardada/:idpp → suma la experiencia guardada
+const aplicarGuardada = async (req, res, next) => {
+  try {
+    responder(res, await svc.aplicarGuardada(Number(req.params.id), req.user.user_id, Number(req.params.idp), Number(req.params.idpp)))
+  } catch (e) { next(e) }
+}
+
+module.exports = { registrarIntervencion, crearXp, pendientesDm, confirmar, manual, pendientesEntrenador, asignarReparto, aplicarGuardada }

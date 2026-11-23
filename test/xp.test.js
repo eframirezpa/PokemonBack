@@ -52,3 +52,21 @@ test('asignación del entrenador: solo sus Pokémon y exactamente su parte', () 
   assert.deepStrictEqual(validarAsignacion([{ id_personaje_pokemon: 11, xp: 100 }, { id_personaje_pokemon: 12, xp: 0 }], 100, [11, 12]),
     { ok: true, asignacion: [{ id_personaje_pokemon: 11, xp: 100 }] })
 })
+
+const { margenXp, partirXp } = require('../src/lib/xp')
+const umbral = new Map([[1, 0], [2, 200], [3, 800], [4, 2000], [5, 6000], [19, 382000], [20, 450000]])
+
+test('margen: sube como mucho un nivel', () => {
+  // Nivel 3 con 800: el tope es 1 menos que el umbral del 5
+  assert.deepStrictEqual(margenXp({ nivel: 3, experiencia: 800, umbral }), { max: 5199 })
+  // En el 19 puede llegar exacto al 20
+  assert.deepStrictEqual(margenXp({ nivel: 19, experiencia: 400000, umbral }), { max: 50000 })
+  assert.deepStrictEqual(margenXp({ nivel: 20, experiencia: 450000, umbral }), { error: 'max' })
+})
+
+test('partir: lo que no cabe se guarda; en el 20 se pierde', () => {
+  assert.deepStrictEqual(partirXp(26000, { max: 5199 }), { aplicar: 5199, guardar: 20801, perder: 0 })
+  assert.deepStrictEqual(partirXp(100, { max: 5199 }), { aplicar: 100, guardar: 0, perder: 0 })
+  assert.deepStrictEqual(partirXp(500, { error: 'nomargin' }), { aplicar: 0, guardar: 500, perder: 0 })
+  assert.deepStrictEqual(partirXp(500, { error: 'max' }), { aplicar: 0, guardar: 0, perder: 500 })
+})

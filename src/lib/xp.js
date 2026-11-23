@@ -107,7 +107,35 @@ const validarAsignacion = (asignacion, parte, idsPropios) => {
   return { ok: true, asignacion: limpio }
 }
 
+/**
+ * Cuánto se le puede sumar ya a un Pokémon: la misma regla que
+ * addPokemonExperience (personaje.service.js). Sube como mucho un nivel: llega
+ * hasta 1 menos del umbral de dos niveles arriba (en el 19 puede alcanzar el 20
+ * exacto). En el 20 ya no admite más.
+ *   umbral: Map nivel → experiencia total necesaria
+ * Devuelve { max } o { error: 'max' | 'nomargin' }.
+ */
+const margenXp = ({ nivel, experiencia, umbral }) => {
+  const lvl = Number(nivel) || 1
+  const exp = Number(experiencia) || 0
+  if (lvl >= 20) return { error: 'max' }
+  const tope = umbral.get(Math.min(lvl + 2, 20))
+  if (tope == null) return { error: 'nomargin' }
+  const max = tope - exp - (lvl + 2 > 20 ? 0 : 1)
+  return max < 1 ? { error: 'nomargin' } : { max }
+}
+
+/** Parte la experiencia en lo que se suma ya y lo que se guarda (o se pierde en el 20). */
+const partirXp = (xp, margen) => {
+  const n = Math.max(0, Math.floor(Number(xp) || 0))
+  if (margen.error === 'max') return { aplicar: 0, guardar: 0, perder: n }
+  const max = margen.error ? 0 : margen.max
+  const aplicar = Math.min(n, max)
+  return { aplicar, guardar: n - aplicar, perder: 0 }
+}
+
 module.exports = {
+  margenXp, partirXp,
   parseSR, xpAlDerrotar, xpAlAtrapar, xpPorMotivo,
   agruparIntervenciones, repartoIgual, validarRepartoDm, validarAsignacion,
 }

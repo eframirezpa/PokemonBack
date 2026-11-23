@@ -10,7 +10,8 @@
 //  4. Cada entrenador ve su parte (pendientesEntrenador) y la reparte entre
 //     sus Pokémon (eso va en la parte D).
 const { query, transaction, SCHEMA } = require('../config/db')
-const { xpPorMotivo, agruparIntervenciones, validarRepartoDm } = require('../lib/xp')
+const { xpPorMotivo, agruparIntervenciones, validarRepartoDm, validarAsignacion, margenXp, partirXp } = require('../lib/xp')
+const personajeSvc = require('./personaje.service')
 
 const TI   = `"${SCHEMA}"."partida_intervencion"`
 const TX   = `"${SCHEMA}"."partida_xp"`
@@ -19,6 +20,9 @@ const TP   = `"${SCHEMA}"."partida"`
 const TPJ  = `"${SCHEMA}"."personaje"`
 const TUP  = `"${SCHEMA}"."usuarios_partida"`
 const TPP  = `"${SCHEMA}"."personaje_pokemon"`
+const TG   = `"${SCHEMA}"."personaje_pokemon_xp_guardada"`
+const TEXP = `"${SCHEMA}"."pokemon_experience_levels"`
+const TPPI = `"${SCHEMA}"."personaje_pokemon_pending_improvement"`
 
 const esDuenio = async (id_partida, id_master) => {
   const { rows } = await query(`SELECT 1 FROM ${TP} WHERE id_partida = $1 AND owner_partida = $2`, [id_partida, id_master])
@@ -148,7 +152,11 @@ const manual = async (id_partida, id_master, id_xp) => {
   return { ok: true }
 }
 
-/** 4. Las partes del entrenador que aún no ha repartido entre sus Pokémon. */
+/**
+ * 4. Lo del entrenador: las partes que aún no reparte entre sus Pokémon y la
+ * experiencia guardada de cada Pokémon (bloqueada mientras tenga mejoras de
+ * nivel por completar).
+ */
 const pendientesEntrenador = async (id_partida, id_personaje, user_id) => {
   if (!(await personajeDelUsuario(id_partida, id_personaje, user_id))) return { error: 'ajeno' }
   const { rows } = await query(
@@ -157,10 +165,95 @@ const pendientesEntrenador = async (id_partida, id_personaje, user_id) => {
       WHERE r.id_personaje = $1 AND r.asignada_at IS NULL AND x.id_partida = $2
       ORDER BY r.id_reparto`,
     [id_personaje, id_partida])
-  return { pendientes: rows }
+  const { rows: guardadas } = await query(
+    `SELECT g.id_personaje_pokemon, g.xp_guardada, pp.pokemon_apodo, pp.pokemon_level,
+            EXISTS (SELECT 1 FROM ${TPPI} i
+                     WHERE i.personaje_pokemon_pending_improvement_pokemon_id = g.id_personaje_pokemon
+                       AND i.personaje_pokemon_pending_improvement_applied = false) AS bloqueada
+       FROM ${TG} g JOIN ${TPP} pp ON pp.id_personaje_pokemon = g.id_personaje_pokemon
+      WHERE pp.id_personaje = $1 ORDER BY g.updated_at`,
+    [id_personaje])
+  return { pendientes: rows, guardadas }
+}
+
+/** Cuánto admite ya el Pokémon. Con mejoras de nivel pendientes no admite nada. */
+const leerMargen = async (idpp) => {
+  const { rows } = await query(
+    `SELECT pokemon_level, pokemon_experiencia,
+            EXISTS (SELECT 1 FROM ${TPPI} i
+                     WHERE i.personaje_pokemon_pending_improvement_pokemon_id = $1
+                       AND i.personaje_pokemon_pending_improvement_applied = false) AS pendiente
+       FROM ${TPP} WHERE id_personaje_pokemon = $1`, [idpp])
+  if (!rows.length) return { error: 'notfound' }
+  const { rows: niveles } = await query(`SELECT pokemon_level, pokemon_experience_needed FROM ${TEXP}`)
+  const umbral = new Map(niveles.map(r => [Number(r.pokemon_level), Number(r.pokemon_experience_needed)]))
+  const margen = margenXp({ nivel: rows[0].pokemon_level, experiencia: rows[0].pokemon_experiencia, umbral })
+  // En el 20 se pierde igual; si no, con mejoras pendientes se guarda todo
+  if (!margen.error && rows[0].pendiente) return { margen: { error: 'nomargin' }, pendiente: true }
+  return { margen, pendiente: !!rows[0].pendiente }
+}
+
+const guardar = (idpp, xp) => query(
+  `INSERT INTO ${TG} (id_personaje_pokemon, xp_guardada) VALUES ($1, $2)
+   ON CONFLICT (id_personaje_pokemon)
+   DO UPDATE SET xp_guardada = ${TG}.xp_guardada + EXCLUDED.xp_guardada, updated_at = now()`,
+  [idpp, xp])
+
+/** Suma hasta el tope (un nivel); el resto se guarda; en el nivel 20 se pierde. */
+const aplicarConTope = async (idpp, xp) => {
+  const m = await leerMargen(idpp)
+  if (m.error) return { id_personaje_pokemon: idpp, error: m.error }
+  const p = partirXp(xp, m.margen)
+  let r = null
+  if (p.aplicar > 0) {
+    r = await personajeSvc.addPokemonExperience(idpp, p.aplicar)
+    // Si el servicio la rechaza (cambió algo entre medias), no se pierde: se guarda
+    if (r?.error) { p.guardar += p.aplicar; p.aplicar = 0; r = null }
+  }
+  if (p.guardar > 0) await guardar(idpp, p.guardar)
+  return {
+    id_personaje_pokemon: idpp, ...p,
+    leveled_up: !!r?.leveled_up, pokemon_level: r?.pokemon_level ?? null, nivel_entrenador: r?.nivel_entrenador ?? null,
+  }
+}
+
+/** 5. El entrenador reparte su parte entre sus Pokémon. */
+const asignarReparto = async (id_partida, user_id, id_reparto, asignacion) => {
+  const { rows } = await query(
+    `SELECT r.id_personaje, r.reparto_xp, r.asignada_at
+       FROM ${TR} r JOIN ${TX} x ON x.id_xp = r.id_xp
+      WHERE r.id_reparto = $1 AND x.id_partida = $2`, [id_reparto, id_partida])
+  const r = rows[0]
+  if (!r) return { error: 'notfound' }
+  if (!(await personajeDelUsuario(id_partida, r.id_personaje, user_id))) return { error: 'ajeno' }
+  if (r.asignada_at) return { error: 'resuelta' }
+  const { rows: propios } = await query(`SELECT id_personaje_pokemon FROM ${TPP} WHERE id_personaje = $1`, [r.id_personaje])
+  const v = validarAsignacion(asignacion, r.reparto_xp, propios.map(p => p.id_personaje_pokemon))
+  if (v.error) return { error: v.error === 'ajeno' ? 'pokemonajeno' : v.error }
+  // Se marca primero: un doble clic no la reparte dos veces
+  const { rowCount } = await query(
+    `UPDATE ${TR} SET asignada_at = now() WHERE id_reparto = $1 AND asignada_at IS NULL`, [id_reparto])
+  if (!rowCount) return { error: 'resuelta' }
+  const resultados = []
+  for (const a of v.asignacion) resultados.push(await aplicarConTope(a.id_personaje_pokemon, a.xp))
+  return { ok: true, resultados }
+}
+
+/** 6. Sumar la experiencia guardada de un Pokémon (ya sin mejoras pendientes). */
+const aplicarGuardada = async (id_partida, user_id, id_personaje, idpp) => {
+  if (!(await personajeDelUsuario(id_partida, id_personaje, user_id))) return { error: 'ajeno' }
+  const { rows: es } = await query(
+    `SELECT 1 FROM ${TPP} WHERE id_personaje_pokemon = $1 AND id_personaje = $2`, [idpp, id_personaje])
+  if (!es.length) return { error: 'pokemonajeno' }
+  const m = await leerMargen(idpp)
+  if (m.pendiente) return { error: 'mejoras' }
+  const { rows } = await query(`DELETE FROM ${TG} WHERE id_personaje_pokemon = $1 RETURNING xp_guardada`, [idpp])
+  if (!rows.length) return { error: 'notfound' }
+  return { ok: true, resultado: await aplicarConTope(idpp, rows[0].xp_guardada) }
 }
 
 module.exports = {
   registrarIntervencion, crearXp, pendientesDm, confirmar, manual, pendientesEntrenador,
+  asignarReparto, aplicarGuardada,
   insertarIntervencion, insertarXp,
 }

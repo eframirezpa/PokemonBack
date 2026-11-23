@@ -50,6 +50,8 @@ router.post('/:id/log', authenticate, logCtrl.agregarLog)
 // y las partes de cada entrenador
 router.post('/:id/intervencion',          authenticate, xpCtrl.registrarIntervencion)
 router.get('/:id/xp/personaje/:idp',      authenticate, xpCtrl.pendientesEntrenador)
+router.post('/:id/xp/reparto/:idr/asignar', authenticate, xpCtrl.asignarReparto)
+router.post('/:id/xp/personaje/:idp/guardada/:idpp', authenticate, xpCtrl.aplicarGuardada)
 
 // Solo master
 const master = [authenticate, requireRole('master')]

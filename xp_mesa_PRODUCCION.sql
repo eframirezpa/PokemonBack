@@ -52,3 +52,17 @@ CREATE TABLE IF NOT EXISTS juego."partida_xp_reparto" (
 );
 CREATE INDEX IF NOT EXISTS partida_xp_reparto_personaje_idx
   ON juego."partida_xp_reparto" (id_personaje) WHERE asignada_at IS NULL;
+
+-- Experiencia guardada por Pokémon (parte D). Misma migración que migrations/0011_xp_guardada.sql.
+-- Experiencia guardada por Pokémon (plan-xp-y-mesa, etapa 4 parte D).
+--
+-- La app sube de a un nivel por vez: al repartir una experiencia grande se
+-- suma hasta ese tope y el resto queda aquí. Vuelve a ofrecerse al jugador
+-- cuando el Pokémon termina las mejoras del nivel que acaba de subir.
+-- Una fila por Pokémon: lo nuevo se acumula.
+CREATE TABLE IF NOT EXISTS juego."personaje_pokemon_xp_guardada" (
+  id_personaje_pokemon integer PRIMARY KEY
+    REFERENCES juego."personaje_pokemon"(id_personaje_pokemon) ON DELETE CASCADE,
+  xp_guardada          integer NOT NULL CHECK (xp_guardada > 0),
+  updated_at           timestamptz NOT NULL DEFAULT now()
+);
