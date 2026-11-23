@@ -6,6 +6,7 @@
 // pueden atrapar el mismo Pokémon, y una pokébola nunca se gasta en un
 // Pokémon que ya no estaba.
 const { query, transaction, SCHEMA } = require('../config/db')
+const xpSvc = require('./xp_mesa.service')
 const { calcularDC, entero } = require('../lib/captura')
 const { healingAtLevel } = require('../lib/hp')
 const { transferirConCliente } = require('./master_pokemon.service')
@@ -136,10 +137,18 @@ const capturar = async (id_partida, user_id, body = {}) => {
     const total = d20 + bono
     const exito = calc.automatica || total >= calc.dc
 
+    // Experiencia en mesa: la Poké Ball cuenta como intervención, atrape o no;
+    // si lo atrapa, queda la experiencia pendiente (1/5) para que el DM la reparta.
+    await xpSvc.insertarIntervencion(client, {
+      id_partida, id_campo: poke.id_campo, id_personaje: trainer.id_personaje, tipo: 'pokebola' })
+
     let transferencia = null
     if (exito) {
       transferencia = await transferirConCliente(client, owner, poke.id_master_pokemon, trainer.id_personaje)
       if (transferencia.error) throw new Error(`No se pudo transferir el Pokémon atrapado: ${transferencia.error}`)
+      await xpSvc.insertarXp(client, {
+        id_partida, id_campo: poke.id_campo, pokemon: poke.pokemon_apodo || poke.pokemon_name,
+        nivel, sr: poke.pokemon_sr, motivo: 'captura' })
     }
 
     return {
