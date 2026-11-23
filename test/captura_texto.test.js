@@ -25,3 +25,10 @@ test('oculto que escapa: ni nombre ni DC para la mesa', () => {
   assert.doesNotMatch(t.texto, /Pikachu|DC/)
   assert.match(t.texto_master, /Pikachu.*contra DC 18/)
 })
+
+test('oculto que se atrapa: la mesa no ve el nombre; el máster sí', () => {
+  const t = textoCaptura({ ...base, exito: true, total: 19, oculto: true })
+  assert.doesNotMatch(t.texto, /Pikachu|DC/)
+  assert.match(t.texto, /Ash atrapó un Pokémon/)
+  assert.match(t.texto_master, /Pikachu.*contra DC 18.*¡lo atrapó!/)
+})

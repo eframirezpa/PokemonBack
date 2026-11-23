@@ -11,7 +11,7 @@ const T = `"${SCHEMA}"."partida_log"`
 const LIMIT = 300
 const MAX_TEXTO = 500
 // Tipos válidos de línea (migración 0006). Cualquier otro se guarda como NULL.
-const TIPOS = new Set(['captura', 'evolucion', 'nivel', 'pokemon', 'item', 'ataque', 'aparicion', 'tirada', 'mensaje'])
+const TIPOS = new Set(['captura', 'evolucion', 'nivel', 'pokemon', 'item', 'ataque', 'aparicion', 'tirada', 'mensaje', 'experiencia'])
 // Para el resumen de la sesión anterior basta con lo más reciente: aun en una
 // campaña larga, la sesión anterior cae dentro de estas líneas.
 const LIMIT_RESUMEN = 3000

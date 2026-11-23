@@ -787,17 +787,14 @@ const findPokemonDetail = async (id_personaje_pokemon) => {
   const bondRuta = pp.id_personaje ? await rutaDelBonoBond(pp.id_personaje) : null
 
   // Bono de especialización a las habilidades: +1 por cada especialización del
-  // entrenador cuyo tipo coincida con uno del Pokémon, y solo en las habilidades
-  // cuya característica asociada sea proficiente (pokemon_stats_<stat>_prof).
-  // Un Pokémon de dos tipos con dos especializaciones que encajen suma 2.
+  // entrenador cuyo tipo coincida con uno del Pokémon, en TODAS sus skill
+  // checks, como dice el catálogo ("Add a +1 bonus to all skill checks made by
+  // any of your <Type>-type Pokémon"). Un Pokémon de dos tipos con dos
+  // especializaciones que encajen suma 2.
   const espExtra = pp.id_personaje
     ? (await coincidenciasPorPokemon(pp.id_personaje)).get(Number(id_personaje_pokemon)) || 0
     : 0
-  for (const s of skills) {
-    const ab = (s.skill_related_ability || '').toLowerCase()
-    const proficienteEnLaStat = !!stats?.[`pokemon_stats_${ab}_prof`]
-    s.especializacion_extra = (espExtra > 0 && proficienteEnLaStat) ? espExtra : 0
-  }
+  for (const s of skills) s.especializacion_extra = espExtra
 
   // Recursos de ruta con target 'pokemon': son los de ESTE Pokémon, ya con el
   // punto extra del rasgo. Si el entrenador no tiene el rasgo, bondInfo viene
@@ -1261,18 +1258,18 @@ const updateEquipoCantidad = async (id_personaje_equipo, cantidad) => {
 }
 
 // ── Estados alterados ───────────────────────────────────────────────────────
-// Se guardan como lista separada por comas ('quemado,confuso'): son pocos,
-// cortos y siempre se leen y escriben todos juntos. Los pone y los quita cada
+// La columna admite una lista separada por comas, pero un ser vivo tiene un
+// solo estado a la vez: se guarda uno o ninguno. Los pone y los quita cada
 // quien sobre sí mismo y sobre sus Pokémon.
 
 const ESTADOS = ['paralizado', 'dormido', 'envenenado', 'quemado', 'congelado', 'confuso']
 
-/** Deja solo los estados conocidos, sin repetir y en un orden estable */
+/** Un solo estado a la vez: el primero conocido de lo pedido, o ninguno */
 const sanearEstados = (lista) => {
-  const pedidos = new Set((Array.isArray(lista) ? lista : String(lista ?? '').split(','))
-    .map(e => String(e).trim().toLowerCase()).filter(Boolean))
-  const limpios = ESTADOS.filter(e => pedidos.has(e))
-  return limpios.length ? limpios.join(',') : null
+  const pedido = (Array.isArray(lista) ? lista : String(lista ?? '').split(','))
+    .map(e => String(e).trim().toLowerCase())
+    .find(e => ESTADOS.includes(e))
+  return pedido || null
 }
 
 const setEstadosPersonaje = async (id_personaje, estados) => {

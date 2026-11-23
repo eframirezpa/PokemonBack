@@ -171,9 +171,8 @@ const capturar = async (id_partida, user_id, body = {}) => {
 }
 
 /**
- * La línea de actividad. Si el Pokémon estaba oculto y escapa, la mesa no
- * se entera de cuál era (texto); el máster sí (texto_master). Si lo atrapa,
- * se revela: ya es del entrenador.
+ * La línea de actividad. Si el Pokémon estaba oculto, la mesa no se entera
+ * de cuál era (texto), lo atrape o no; el máster sí (texto_master).
  *
  * La DC solo se comparte si lo atrapa. Si escapa es información que la mesa
  * no debe conocer: el texto lleva la tirada sin la DC, y el máster la ve
@@ -185,6 +184,8 @@ const textoCaptura = (r) => {
   const lanzo = (nombre, conDC) => `${r.nombre_personaje} lanzó una ${r.bola.nombre} a ${nombre}${tirada(conDC)}`
   if (r.exito) {
     const t = `${lanzo(r.pokemon, true)}: ¡lo atrapó!`
+    // Oculto: la mesa sabe que atrapó algo, no qué. El máster lo ve completo.
+    if (r.oculto) return { texto: `${r.nombre_personaje} atrapó un Pokémon${tirada(false)}.`, texto_master: t }
     return { texto: t, texto_master: null }
   }
   const texto = `${lanzo(r.oculto ? 'un Pokémon' : r.pokemon, false)}: se escapó.`
