@@ -348,7 +348,7 @@ const findParty = async (id_partida) => {
             p.personaje_hp, p.personaje_current_hp,
             p.personaje_exahust_lvl, p.personaje_dsts, p.personaje_dstf,
             p.personaje_estados, p.personaje_is_editable, p.personaje_inspirado,
-            p.personaje_terreno
+            p.personaje_terreno, p.personaje_en_centro_pokemon
      FROM ${T} p
      JOIN ${TUP} up ON up.id_usuarios_partida = p.id_usuario_partida
      WHERE up.id_partida = $1
@@ -1952,6 +1952,23 @@ const addPokedollars = async (id_personaje, cantidad) => {
   return { pokedollars: nuevo }
 }
 
+// "En centro Pokémon" (personaje_en_centro_pokemon): sin él, el entrenador no
+// mueve, libera ni transfiere Pokémon de su cinturón y Femputadora.
+const setCentroPokemon = async (id_personaje, en_centro) => {
+  const { rows } = await query(
+    `UPDATE ${T} SET personaje_en_centro_pokemon = $1 WHERE id_personaje = $2
+     RETURNING id_personaje, personaje_en_centro_pokemon`,
+    [!!en_centro, id_personaje]
+  )
+  return rows[0] || null
+}
+
+const enCentroPokemon = async (id_personaje) => {
+  const { rows } = await query(
+    `SELECT personaje_en_centro_pokemon FROM ${T} WHERE id_personaje = $1`, [id_personaje])
+  return !!rows[0]?.personaje_en_centro_pokemon
+}
+
 // Activa/desactiva la edición del personaje (personaje_is_editable)
 const setEditable = async (id_personaje, is_editable) => {
   const { rows } = await query(
@@ -2379,7 +2396,7 @@ module.exports = {
   findWeapon, addWeapon, setWeaponInUse,
   findPokemon, findPokemonDetail, setPokemonEnEquipo, setPokemonEnJuego, addPokemon, addPokemonExperience,
   pokeSlots, enEquipoCount, renamePokemon, releasePokemon, transferPokemonToPersonaje, pendingRenames, spendMovePP, setMovePP,
-  findFeats, addFeat, removeFeat, setFeatAvailable, setEditable, setInspirado, spendPokedollars, addPokedollars,
+  findFeats, addFeat, removeFeat, setFeatAvailable, setEditable, setCentroPokemon, enCentroPokemon, setInspirado, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,
 }

@@ -145,8 +145,20 @@ const getPokemonDetail = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// Sin "En centro Pokémon" el entrenador no toca su cinturón ni su Femputadora
+// (mover, liberar, transferir). El máster no tiene esa restricción. Responde
+// el 403 y devuelve true si la operación debe pararse.
+const NARRATIVA = 'La narrativa no permite hacer esto en este momento.'
+const bloqueadoPorNarrativa = async (req, res) => {
+  if (req.user?.role === 'master') return false
+  if (await svc.enCentroPokemon(req.params.id)) return false
+  res.status(403).json({ error: NARRATIVA, codigo: 'centro_pokemon' })
+  return true
+}
+
 const updatePokemonEnEquipo = async (req, res, next) => {
   try {
+    if (await bloqueadoPorNarrativa(req, res)) return
     const result = await svc.setPokemonEnEquipo(req.params.id, req.params.idpp, !!req.body.en_equipo)
     if (result && result.full) {
       return res.status(409).json({ error: `El cinturón ya tiene ${result.slots} Pokémon`, slots: result.slots })
@@ -437,6 +449,16 @@ const addPokedollars = async (req, res, next) => {
   } catch (e) { next(e) }
 }
 
+// PATCH /api/personaje/:id/centro-pokemon  { en_centro } → solo el máster
+const setCentroPokemon = async (req, res, next) => {
+  try {
+    if (req.user?.role !== 'master') return res.status(403).json({ error: 'Solo el máster' })
+    const data = await svc.setCentroPokemon(req.params.id, !!req.body.en_centro)
+    if (!data) return res.status(404).json({ error: 'Personaje no encontrado' })
+    res.json(data)
+  } catch (e) { next(e) }
+}
+
 // PATCH /api/personaje/:id/editable  { is_editable } → activa/desactiva la edición
 const setEditable = async (req, res, next) => {
   try {
@@ -521,6 +543,7 @@ const renamePokemon = async (req, res, next) => {
 // DELETE /api/personaje/:id/pokemon/:idpp → libera (borra) el Pokémon
 const releasePokemon = async (req, res, next) => {
   try {
+    if (await bloqueadoPorNarrativa(req, res)) return
     const r = await svc.releasePokemon(req.params.id, req.params.idpp)
     if (r.error === 'notfound') return res.status(404).json({ error: 'Pokémon no encontrado' })
     res.json(r)
@@ -530,6 +553,7 @@ const releasePokemon = async (req, res, next) => {
 // POST /api/personaje/:id/pokemon/:idpp/transfer  { id_personaje_destino }
 const transferPokemon = async (req, res, next) => {
   try {
+    if (await bloqueadoPorNarrativa(req, res)) return
     const destino = Number(req.body.id_personaje_destino)
     if (!destino) return res.status(400).json({ error: 'id_personaje_destino requerido' })
     const r = await svc.transferPokemonToPersonaje(req.params.id, req.params.idpp, destino)
@@ -569,7 +593,7 @@ module.exports = {
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,
   getPokemon, getPokemonDetail, updatePokemonEnEquipo, updatePokemonEnJuego, addPokemon, addPokemonExperience,
   renamePokemon, releasePokemon, transferPokemon, pendingRenames, spendMovePP, setMovePP,
-  getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, setInspirado, spendPokedollars, addPokedollars,
+  getFeats, addFeat, removeFeat, setFeatAvailable, setEditable, setCentroPokemon, setInspirado, spendPokedollars, addPokedollars,
   addSpecialization, removeSpecialization,
   create,
 }
