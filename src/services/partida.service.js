@@ -1,3 +1,4 @@
+const { pasoDeTurno } = require('../lib/turno')
 const { query, SCHEMA } = require('../config/db')
 const T = `"${SCHEMA}"."partida"`
 
@@ -343,7 +344,8 @@ const intercambiarIniciativa = async (id_partida, claveA, claveB) => {
  * hacia adelante: es su forma de decir "ya terminé". La comprobación vive aquí
  * y no en el cliente porque si no, cualquiera podría saltarse el orden.
  *
- * Al dar la vuelta completa entra una ronda nueva.
+ * Al dar la vuelta completa entra una ronda nueva; al retroceder desde el
+ * primer turno se vuelve a la ronda anterior.
  */
 const avanzarTurno = async (id_partida, user_id, esMaster, direccion = 'siguiente') => {
   const actual = await findIniciativa(id_partida)
@@ -355,13 +357,9 @@ const avanzarTurno = async (id_partida, user_id, esMaster, direccion = 'siguient
   if (!esMaster && ini.participantes[turno]?.user_id !== user_id) return { error: 'noesturno' }
   if (!esMaster && direccion !== 'siguiente') return { error: 'noesturno' }
 
-  const total = ini.participantes.length
-  const paso = direccion === 'anterior' ? -1 : 1
-  const siguiente = (turno + paso + total) % total
-  // Solo suma ronda al pasar del último al primero, no al retroceder
-  const ronda = num(ini.ronda, 1) + (paso === 1 && siguiente === 0 ? 1 : 0)
-
-  return guardarIniciativa(id_partida, { ...ini, turno: siguiente, ronda })
+  // Adelante suma ronda al dar la vuelta; atrás la resta (ver lib/turno.js)
+  const paso = pasoDeTurno({ turno, ronda: num(ini.ronda, 1), total: ini.participantes.length, direccion })
+  return guardarIniciativa(id_partida, { ...ini, ...paso })
 }
 
 module.exports = { findClima, setClima, avanzarTurno, findActiveByUser, findByOwner, findById, create, updateSprites, update, toggleActivada, remove, findMapaPin, setMapaPin, findIniciativa, guardarIniciativa, abrirIniciativa, tirarIniciativa, intercambiarIniciativa }
