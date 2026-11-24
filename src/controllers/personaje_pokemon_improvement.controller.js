@@ -32,4 +32,14 @@ const confirmAsi = async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'server' }) }
 }
 
-module.exports = { listPending, confirmMoves, confirmAsi }
+// GET /api/personaje/:id/pokemon/:idpp/feats/contexto → lo que necesita el
+// selector para entrenar feats a mano (lápiz de la Femputadora)
+const contextoFeats = async (req, res, next) => {
+  try {
+    const r = await svc.contextoFeats(Number(req.params.id), Number(req.params.idpp))
+    if (!r) return res.status(404).json({ error: 'Pokémon no encontrado' })
+    res.json(r)
+  } catch (e) { next(e) }
+}
+
+module.exports = { contextoFeats, listPending, confirmMoves, confirmAsi }

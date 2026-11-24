@@ -4,7 +4,7 @@
 const PAUSA_MS = 6 * 60 * 60 * 1000
 
 // Lo que se lista una por una en el resumen; el resto solo se cuenta.
-const TIPOS_DESTACADOS = ['captura', 'evolucion', 'nivel', 'pokemon']
+const TIPOS_DESTACADOS = ['captura', 'evolucion', 'nivel', 'pokemon', 'feat']
 
 /** filas ordenadas por fecha ascendente: [{ id, time, ... }] → [[...], [...]] */
 const agruparSesiones = (filas) => {

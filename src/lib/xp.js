@@ -125,13 +125,21 @@ const margenXp = ({ nivel, experiencia, umbral }) => {
   return max < 1 ? { error: 'nomargin' } : { max }
 }
 
-/** Parte la experiencia en lo que se suma ya y lo que se guarda (o se pierde en el 20). */
-const partirXp = (xp, margen) => {
+/**
+ * Una ganancia de experiencia sube como máximo un nivel: se suma hasta el tope
+ * (puede quedar a 1 punto del siguiente) y lo que sobra se pierde. Varias
+ * ganancias cuentan cada una aparte, así que entre todas sí pueden subir más.
+ *  - nivel 20 → se pierde toda (motivo 'max')
+ *  - con mejoras de nivel por completar → se guarda ENTERA para aplicarla
+ *    después como su propia ganancia (no se mezcla con la que la bloqueó)
+ */
+const partirXp = (xp, margen, { pendiente = false } = {}) => {
   const n = Math.max(0, Math.floor(Number(xp) || 0))
-  if (margen.error === 'max') return { aplicar: 0, guardar: 0, perder: n }
-  const max = margen.error ? 0 : margen.max
-  const aplicar = Math.min(n, max)
-  return { aplicar, guardar: n - aplicar, perder: 0 }
+  if (margen.error === 'max') return { aplicar: 0, guardar: 0, perder: n, motivo: n ? 'max' : null }
+  if (pendiente || margen.error) return { aplicar: 0, guardar: n, perder: 0, motivo: null }
+  const aplicar = Math.min(n, margen.max)
+  const perder = n - aplicar
+  return { aplicar, guardar: 0, perder, motivo: perder ? 'tope' : null }
 }
 
 module.exports = {

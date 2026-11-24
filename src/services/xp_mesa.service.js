@@ -166,12 +166,12 @@ const pendientesEntrenador = async (id_partida, id_personaje, user_id) => {
       ORDER BY r.id_reparto`,
     [id_personaje, id_partida])
   const { rows: guardadas } = await query(
-    `SELECT g.id_personaje_pokemon, g.xp_guardada, pp.pokemon_apodo, pp.pokemon_level,
+    `SELECT g.id_xp_guardada, g.id_personaje_pokemon, g.xp_guardada, pp.pokemon_apodo, pp.pokemon_level,
             EXISTS (SELECT 1 FROM ${TPPI} i
                      WHERE i.personaje_pokemon_pending_improvement_pokemon_id = g.id_personaje_pokemon
                        AND i.personaje_pokemon_pending_improvement_applied = false) AS bloqueada
        FROM ${TG} g JOIN ${TPP} pp ON pp.id_personaje_pokemon = g.id_personaje_pokemon
-      WHERE pp.id_personaje = $1 ORDER BY g.updated_at`,
+      WHERE pp.id_personaje = $1 ORDER BY g.id_xp_guardada`,
     [id_personaje])
   return { pendientes: rows, guardadas }
 }
@@ -188,27 +188,27 @@ const leerMargen = async (idpp) => {
   const { rows: niveles } = await query(`SELECT pokemon_level, pokemon_experience_needed FROM ${TEXP}`)
   const umbral = new Map(niveles.map(r => [Number(r.pokemon_level), Number(r.pokemon_experience_needed)]))
   const margen = margenXp({ nivel: rows[0].pokemon_level, experiencia: rows[0].pokemon_experiencia, umbral })
-  // En el 20 se pierde igual; si no, con mejoras pendientes se guarda todo
-  if (!margen.error && rows[0].pendiente) return { margen: { error: 'nomargin' }, pendiente: true }
   return { margen, pendiente: !!rows[0].pendiente }
 }
 
+// Una fila por ganancia aplazada: dos ganancias no se juntan en una
 const guardar = (idpp, xp) => query(
-  `INSERT INTO ${TG} (id_personaje_pokemon, xp_guardada) VALUES ($1, $2)
-   ON CONFLICT (id_personaje_pokemon)
-   DO UPDATE SET xp_guardada = ${TG}.xp_guardada + EXCLUDED.xp_guardada, updated_at = now()`,
-  [idpp, xp])
+  `INSERT INTO ${TG} (id_personaje_pokemon, xp_guardada) VALUES ($1, $2)`, [idpp, xp])
 
-/** Suma hasta el tope (un nivel); el resto se guarda; en el nivel 20 se pierde. */
+/**
+ * Aplica UNA ganancia: sube como máximo un nivel y lo que sobra se pierde. Si
+ * el Pokémon tiene mejoras de nivel por completar, la ganancia se guarda
+ * entera y se ofrece después como ganancia aparte. En el nivel 20 se pierde.
+ */
 const aplicarConTope = async (idpp, xp) => {
   const m = await leerMargen(idpp)
   if (m.error) return { id_personaje_pokemon: idpp, error: m.error }
-  const p = partirXp(xp, m.margen)
+  const p = partirXp(xp, m.margen, { pendiente: m.pendiente })
   let r = null
   if (p.aplicar > 0) {
     r = await personajeSvc.addPokemonExperience(idpp, p.aplicar)
-    // Si el servicio la rechaza (cambió algo entre medias), no se pierde: se guarda
-    if (r?.error) { p.guardar += p.aplicar; p.aplicar = 0; r = null }
+    // Si el servicio la rechaza (cambió algo entre medias), no se pierde: se guarda entera
+    if (r?.error) { p.guardar = p.aplicar + p.perder; p.aplicar = 0; p.perder = 0; p.motivo = null; r = null }
   }
   if (p.guardar > 0) await guardar(idpp, p.guardar)
   return {
@@ -247,7 +247,11 @@ const aplicarGuardada = async (id_partida, user_id, id_personaje, idpp) => {
   if (!es.length) return { error: 'pokemonajeno' }
   const m = await leerMargen(idpp)
   if (m.pendiente) return { error: 'mejoras' }
-  const { rows } = await query(`DELETE FROM ${TG} WHERE id_personaje_pokemon = $1 RETURNING xp_guardada`, [idpp])
+  // La más antigua de ese Pokémon: cada ganancia guardada se aplica por separado
+  const { rows } = await query(
+    `DELETE FROM ${TG} WHERE id_xp_guardada = (
+       SELECT id_xp_guardada FROM ${TG} WHERE id_personaje_pokemon = $1 ORDER BY id_xp_guardada LIMIT 1)
+     RETURNING xp_guardada`, [idpp])
   if (!rows.length) return { error: 'notfound' }
   return { ok: true, resultado: await aplicarConTope(idpp, rows[0].xp_guardada) }
 }

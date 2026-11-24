@@ -64,9 +64,21 @@ test('margen: sube como mucho un nivel', () => {
   assert.deepStrictEqual(margenXp({ nivel: 20, experiencia: 450000, umbral }), { error: 'max' })
 })
 
-test('partir: lo que no cabe se guarda; en el 20 se pierde', () => {
-  assert.deepStrictEqual(partirXp(26000, { max: 5199 }), { aplicar: 5199, guardar: 20801, perder: 0 })
-  assert.deepStrictEqual(partirXp(100, { max: 5199 }), { aplicar: 100, guardar: 0, perder: 0 })
-  assert.deepStrictEqual(partirXp(500, { error: 'nomargin' }), { aplicar: 0, guardar: 500, perder: 0 })
-  assert.deepStrictEqual(partirXp(500, { error: 'max' }), { aplicar: 0, guardar: 0, perder: 500 })
+test('una ganancia sube como máximo un nivel: lo que sobra se pierde', () => {
+  assert.deepStrictEqual(partirXp(26000, { max: 5199 }), { aplicar: 5199, guardar: 0, perder: 20801, motivo: 'tope' })
+  assert.deepStrictEqual(partirXp(100, { max: 5199 }), { aplicar: 100, guardar: 0, perder: 0, motivo: null })
+  assert.deepStrictEqual(partirXp(500, { error: 'max' }), { aplicar: 0, guardar: 0, perder: 500, motivo: 'max' })
+})
+
+test('con mejoras de nivel por completar, la ganancia se guarda entera', () => {
+  assert.deepStrictEqual(partirXp(26000, { max: 5199 }, { pendiente: true }), { aplicar: 0, guardar: 26000, perder: 0, motivo: null })
+})
+
+test('dos ganancias aparte pueden subir dos niveles', () => {
+  // Nivel 3 con 800: la primera llega a 5999 (sube al 4); desde el 4 la segunda puede llegar al 5
+  const umbral2 = new Map([[3, 800], [4, 2000], [5, 6000], [6, 12000]])
+  const g1 = partirXp(26000, margenXp({ nivel: 3, experiencia: 800, umbral: umbral2 }))
+  assert.strictEqual(800 + g1.aplicar, 5999)
+  const g2 = partirXp(26000, margenXp({ nivel: 4, experiencia: 5999, umbral: umbral2 }))
+  assert.ok(5999 + g2.aplicar >= 6000)
 })

@@ -47,6 +47,96 @@ const movePoolNames = (pk, level) => {
   return [...new Set(names.map(n => claveMove(n)).filter(Boolean))]
 }
 
+// Lo que necesitan las ventanas de un Pokémon: movimientos (aprendidos, tope y
+// pool) y, para elegir feats, stats, skills, pasivas ocultas y feats que ya
+// tiene. Lo usan la subida de nivel (listPending) y el lápiz de feats
+// manuales de la Femputadora (contextoFeats).
+const completarContexto = async (item, p, isAsi) => {
+  const level = item.level
+  // Los movimientos se pueden reacomodar en cualquier subida de nivel,
+  // así que se calculan siempre (antes solo en los niveles sin ASI).
+  const { rows: learned } = await query(
+    `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range,
+            m.move_duration, m.move_description, m.move_power_1, m.move_power_2, m.move_power_3,
+            m.move_higher_levels, m.move_optional_rules, m.move_has_damage,
+            m.move_damage_level_1, m.move_damage_level_5, m.move_damage_level_10, m.move_damage_level_17,
+            m.move_damage_modifier, m.move_damage_type, m.move_attack_scope,
+            m.move_save_attribute, m.move_save_dc, m.move_is_concentration
+     FROM ${TPPM} pm JOIN ${TMOVES} m ON m.move_id = pm.personaje_pokemon_moves_move_id
+     WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1
+     ORDER BY pm.personaje_pokemon_moves_id`, [p.idpp])
+  item.learned_moves = learned.filter(m => m.move_id !== STRUGGLE_ID)
+  // Cuántos puede saber: 4 de base más lo que den sus feats
+  item.max_moves = (await efectosDePokemon(query, p.idpp)).known_moves_max
+  const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [p.id_pokemon])
+  const poolNames = pkRows[0] ? movePoolNames(pkRows[0], level) : []
+  let pool = []
+  if (poolNames.length) {
+    const { rows: mrows } = await query(
+      `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range,
+            m.move_duration, m.move_description, m.move_power_1, m.move_power_2, m.move_power_3,
+            m.move_higher_levels, m.move_optional_rules, m.move_has_damage,
+            m.move_damage_level_1, m.move_damage_level_5, m.move_damage_level_10, m.move_damage_level_17,
+            m.move_damage_modifier, m.move_damage_type, m.move_attack_scope,
+            m.move_save_attribute, m.move_save_dc, m.move_is_concentration FROM ${TMOVES} m WHERE ${SQL_CLAVE_MOVE('m.move_name')} = ANY($1)`, [poolNames])
+    pool = mrows.filter(m => m.move_id !== STRUGGLE_ID)
+  }
+  // Los que ya sabe siguen siendo elegibles aunque no estén en el pool de su
+  // especie actual: al evolucionar conserva los de la forma anterior (regla
+  // de poke5e), y los aprendidos por un feat tampoco salen del pool.
+  const enPool = new Set(pool.map(m => m.move_id))
+  item.move_pool = [...pool, ...item.learned_moves.filter(m => !enPool.has(m.move_id))]
+
+  if (isAsi) {
+    const { rows: st } = await query(`SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [p.idpp])
+    item.stats = st[0] || null
+    const { rows: skills } = await query(
+      `SELECT s.skill_id, s.skill_name, s.skill_related_ability, ps.pokemon_skill_pref, ps.pokemon_skill_expert
+       FROM ${TPSK} ps JOIN ${TSKILLS} s ON s.skill_id = ps.id_skill
+       WHERE ps.id_personaje_pokemon = $1 ORDER BY ps.id_pokemon_skills`, [p.idpp])
+    item.skills = skills
+    // Pasivas ocultas de la especie (regla 5). Van aquí porque la elección
+    // se hace al tomar el feat, y el selector no puede consultarlas solo.
+    // Casi siempre hay una; Squawkabilly tiene dos y entonces se elige.
+    const pkRow = pkRows[0]
+    const ocultas = []
+    if (pkRow) {
+      for (const n of [1, 2, 3, 4]) {
+        if (Number(pkRow[`pokemon_ability_${n}_is_hidden`]) === 1 && pkRow[`pokemon_ability_${n}`]) {
+          ocultas.push(Number(pkRow[`pokemon_ability_${n}`]))
+        }
+      }
+    }
+    item.hidden_abilities = []
+    if (ocultas.length) {
+      const { rows: ab } = await query(
+        `SELECT ability_id, ability_name, ability_description
+           FROM "${SCHEMA}"."abilities" WHERE ability_id = ANY($1) ORDER BY ability_id`, [ocultas])
+      item.hidden_abilities = ab
+    }
+    // Feats que el Pokémon ya tiene, con sus bonos: los no repetibles no deben
+    // volver a ofrecerse y sus bonos de stat tienen que verse reflejados.
+    const { rows: owned } = await query(
+      `SELECT pf.feat_id,
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                  'type',  b.personaje_pokemon_feat_bonus_type,
+                  'llave', b.personaje_pokemon_feat_bonus_llave,
+                  'value', b.personaje_pokemon_feat_bonus_value
+                ) ORDER BY b.personaje_pokemon_feat_bonus_id)
+                FROM ${TPPFB} b
+                WHERE b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id = pf.personaje_pokemon_feat_id
+              ), '[]') AS bonos
+         FROM ${TPPF} pf WHERE pf.id_trainer_pokemon = $1
+        ORDER BY pf.personaje_pokemon_feat_id`, [p.idpp])
+    item.owned_feat_ids = owned.map(f => f.feat_id)
+    item.feats = owned
+    const line = await evolutionLine(p.id_pokemon)
+    item.evolution_line = line
+    item.points = pointsForLine(line)
+  }
+}
+
 // Lista de mejoras pendientes (applied = false) de todos los Pokémon de un personaje,
 // con los datos que necesita cada ventana (movimientos o ASI).
 const listPending = async (id_personaje) => {
@@ -77,88 +167,7 @@ const listPending = async (id_personaje) => {
       hit_dice: p.pokemon_hit_dice || null,
       hit_dice_max: hitDiceMax(p.pokemon_hit_dice),
     }
-    // Los movimientos se pueden reacomodar en cualquier subida de nivel,
-    // así que se calculan siempre (antes solo en los niveles sin ASI).
-    const { rows: learned } = await query(
-      `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range,
-              m.move_duration, m.move_description, m.move_power_1, m.move_power_2, m.move_power_3,
-              m.move_higher_levels, m.move_optional_rules, m.move_has_damage,
-              m.move_damage_level_1, m.move_damage_level_5, m.move_damage_level_10, m.move_damage_level_17,
-              m.move_damage_modifier, m.move_damage_type, m.move_attack_scope,
-              m.move_save_attribute, m.move_save_dc, m.move_is_concentration
-       FROM ${TPPM} pm JOIN ${TMOVES} m ON m.move_id = pm.personaje_pokemon_moves_move_id
-       WHERE pm.personaje_pokemon_moves_personaje_pokemon_id = $1
-       ORDER BY pm.personaje_pokemon_moves_id`, [p.idpp])
-    item.learned_moves = learned.filter(m => m.move_id !== STRUGGLE_ID)
-    // Cuántos puede saber: 4 de base más lo que den sus feats
-    item.max_moves = (await efectosDePokemon(query, p.idpp)).known_moves_max
-    const { rows: pkRows } = await query(`SELECT * FROM ${TPOKEDEX} WHERE pokemon_id = $1`, [p.id_pokemon])
-    const poolNames = pkRows[0] ? movePoolNames(pkRows[0], level) : []
-    let pool = []
-    if (poolNames.length) {
-      const { rows: mrows } = await query(
-        `SELECT m.move_id, m.move_name, m.move_type, m.move_pp, m.move_time, m.move_range,
-              m.move_duration, m.move_description, m.move_power_1, m.move_power_2, m.move_power_3,
-              m.move_higher_levels, m.move_optional_rules, m.move_has_damage,
-              m.move_damage_level_1, m.move_damage_level_5, m.move_damage_level_10, m.move_damage_level_17,
-              m.move_damage_modifier, m.move_damage_type, m.move_attack_scope,
-              m.move_save_attribute, m.move_save_dc, m.move_is_concentration FROM ${TMOVES} m WHERE ${SQL_CLAVE_MOVE('m.move_name')} = ANY($1)`, [poolNames])
-      pool = mrows.filter(m => m.move_id !== STRUGGLE_ID)
-    }
-    // Los que ya sabe siguen siendo elegibles aunque no estén en el pool de su
-    // especie actual: al evolucionar conserva los de la forma anterior (regla
-    // de poke5e), y los aprendidos por un feat tampoco salen del pool.
-    const enPool = new Set(pool.map(m => m.move_id))
-    item.move_pool = [...pool, ...item.learned_moves.filter(m => !enPool.has(m.move_id))]
-
-    if (isAsi) {
-      const { rows: st } = await query(`SELECT * FROM ${TPS} WHERE id_personaje_pokemon = $1`, [p.idpp])
-      item.stats = st[0] || null
-      const { rows: skills } = await query(
-        `SELECT s.skill_id, s.skill_name, s.skill_related_ability, ps.pokemon_skill_pref, ps.pokemon_skill_expert
-         FROM ${TPSK} ps JOIN ${TSKILLS} s ON s.skill_id = ps.id_skill
-         WHERE ps.id_personaje_pokemon = $1 ORDER BY ps.id_pokemon_skills`, [p.idpp])
-      item.skills = skills
-      // Pasivas ocultas de la especie (regla 5). Van aquí porque la elección
-      // se hace al tomar el feat, y el selector no puede consultarlas solo.
-      // Casi siempre hay una; Squawkabilly tiene dos y entonces se elige.
-      const pkRow = pkRows[0]
-      const ocultas = []
-      if (pkRow) {
-        for (const n of [1, 2, 3, 4]) {
-          if (Number(pkRow[`pokemon_ability_${n}_is_hidden`]) === 1 && pkRow[`pokemon_ability_${n}`]) {
-            ocultas.push(Number(pkRow[`pokemon_ability_${n}`]))
-          }
-        }
-      }
-      item.hidden_abilities = []
-      if (ocultas.length) {
-        const { rows: ab } = await query(
-          `SELECT ability_id, ability_name, ability_description
-             FROM "${SCHEMA}"."abilities" WHERE ability_id = ANY($1) ORDER BY ability_id`, [ocultas])
-        item.hidden_abilities = ab
-      }
-      // Feats que el Pokémon ya tiene, con sus bonos: los no repetibles no deben
-      // volver a ofrecerse y sus bonos de stat tienen que verse reflejados.
-      const { rows: owned } = await query(
-        `SELECT pf.feat_id,
-                COALESCE((
-                  SELECT json_agg(json_build_object(
-                    'type',  b.personaje_pokemon_feat_bonus_type,
-                    'llave', b.personaje_pokemon_feat_bonus_llave,
-                    'value', b.personaje_pokemon_feat_bonus_value
-                  ) ORDER BY b.personaje_pokemon_feat_bonus_id)
-                  FROM ${TPPFB} b
-                  WHERE b.personaje_pokemon_feat_bonus_personaje_pokemon_feat_id = pf.personaje_pokemon_feat_id
-                ), '[]') AS bonos
-           FROM ${TPPF} pf WHERE pf.id_trainer_pokemon = $1
-          ORDER BY pf.personaje_pokemon_feat_id`, [p.idpp])
-      item.owned_feat_ids = owned.map(f => f.feat_id)
-      item.feats = owned
-      const line = await evolutionLine(p.id_pokemon)
-      item.evolution_line = line
-      item.points = pointsForLine(line)
-    }
+    await completarContexto(item, p, isAsi)
     out.push(item)
   }
   return out
@@ -342,4 +351,22 @@ const confirmAsi = async (id_personaje, id_personaje_pokemon, statAdds, feat, hp
   })
 }
 
-module.exports = { listPending, confirmMoves, confirmAsi, movePoolNames, STRUGGLE_ID }
+/**
+ * Contexto para entrenar feats a mano (lápiz de la Femputadora, aprobado por
+ * el DM): el mismo que arma la subida de nivel con ASI. null si el Pokémon no
+ * es de ese personaje.
+ */
+const contextoFeats = async (id_personaje, idpp) => {
+  const { rows } = await query(
+    `SELECT pp.id_personaje_pokemon AS idpp, pp.id_pokemon, pp.pokemon_level, pp.pokemon_apodo, pk.pokemon_name
+       FROM ${TPP} pp JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
+      WHERE pp.id_personaje_pokemon = $1 AND pp.id_personaje = $2`, [idpp, id_personaje])
+  const p = rows[0]
+  if (!p) return null
+  const item = { id_personaje_pokemon: p.idpp, apodo: p.pokemon_apodo, name: p.pokemon_name, level: Number(p.pokemon_level) || 1 }
+  await completarContexto(item, p, true)
+  return item
+}
+
+module.exports = {
+  contextoFeats, listPending, confirmMoves, confirmAsi, movePoolNames, STRUGGLE_ID }

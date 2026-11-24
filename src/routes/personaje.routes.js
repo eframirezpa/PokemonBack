@@ -94,6 +94,7 @@ router.delete('/:id/pokemon/:idpp/held-items/:idhi', authenticate, heldItemCtrl.
 router.post('/:id/pokemon/:idpp/held-items/:idhi/usar', authenticate, heldItemCtrl.useHeldItem)
 
 router.get('/:id/pokemon/:idpp/feats',                     authenticate, pkFeatCtrl.getFeats)
+router.get('/:id/pokemon/:idpp/feats/contexto',            authenticate, improveCtrl.contextoFeats)
 router.post('/:id/pokemon/:idpp/feats',                    authenticate, pkFeatCtrl.addFeat)
 router.delete('/:id/pokemon/:idpp/feats/:idfeat',          authenticate, pkFeatCtrl.removeFeat)
 router.patch('/:id/pokemon/:idpp/feats/:idfeat/available', authenticate, pkFeatCtrl.setFeatAvailable)
