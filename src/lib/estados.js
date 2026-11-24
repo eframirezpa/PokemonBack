@@ -43,6 +43,7 @@ const sanearMeta = (meta, estadosTexto) => {
     const o = {}
     const r = entero(d.restantes, 0, 99); if (r != null) o.restantes = r
     const dc = entero(d.dc, 1, 40); if (dc != null) o.dc = dc
+    if (d.incapacitado === true) o.incapacitado = true   // Paralizado con 1 en el d4
     if (Object.keys(o).length) out[e] = o
   }
   if (m.gracia && typeof m.gracia === 'object') {

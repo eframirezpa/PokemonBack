@@ -21,3 +21,8 @@ test('meta: solo lo conocido de lo que tiene, y gracia de lo que no tiene', () =
 test('curar: pierde los datos y entra en gracia', () => {
   assert.deepStrictEqual(metaTrasQuitar({ congelado: { dc: 13 } }, ['congelado'], null), { gracia: { congelado: 1 } })
 })
+
+test('meta: incapacitado de Paralizado se conserva', () => {
+  assert.deepStrictEqual(sanearMeta({ paralizado: { incapacitado: true } }, 'paralizado'), { paralizado: { incapacitado: true } })
+  assert.strictEqual(sanearMeta({ paralizado: { incapacitado: 'si' } }, 'paralizado'), null)
+})

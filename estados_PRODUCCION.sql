@@ -35,8 +35,9 @@ ON CONFLICT (name) DO NOTHING;
 COMMIT;
 
 -- ── Verificación (ejecútala después; debe devolver 6 filas en "ok") ──
--- Las dos últimas confirman que las descripciones de producción son las del
--- CSV: la app reconoce un proyectil elemental por "cambia su tipo a <Tipo>".
+-- Las dos últimas cuentan los proyectiles. La app reconoce uno elemental por
+-- su descripción: "Elemental …" (inglés, producción) o "cambia su tipo a <Tipo>"
+-- (español, CSV local).
 SELECT 'master_campo.campo_estados' AS objeto,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'juego'
                 AND table_name = 'master_campo' AND column_name = 'campo_estados') AS ok
@@ -57,4 +58,5 @@ SELECT 'proyectiles en items (113 esperados)', COUNT(*) >= 113
   FROM juego.items WHERE item_type = 'Proyectil'
 UNION ALL
 SELECT 'proyectiles elementales (90 esperados)', COUNT(*) = 90
-  FROM juego.items WHERE item_type = 'Proyectil' AND item_description ILIKE '%cambia su tipo a%';
+  FROM juego.items WHERE item_type = 'Proyectil'
+   AND (item_description ILIKE 'Elemental%' OR item_description ILIKE '%cambia su tipo a%');
