@@ -347,7 +347,7 @@ const findParty = async (id_partida) => {
     `SELECT p.id_personaje, up.user_id, p.nombre_personaje,
             p.personaje_hp, p.personaje_current_hp,
             p.personaje_exahust_lvl, p.personaje_dsts, p.personaje_dstf,
-            p.personaje_estados, p.personaje_is_editable, p.personaje_inspirado,
+            p.personaje_estados, p.personaje_estados_meta, p.personaje_is_editable, p.personaje_inspirado,
             p.personaje_terreno, p.personaje_en_centro_pokemon
      FROM ${T} p
      JOIN ${TUP} up ON up.id_usuarios_partida = p.id_usuario_partida
@@ -363,7 +363,7 @@ const findParty = async (id_partida) => {
     `SELECT pp.id_personaje, pp.id_personaje_pokemon, pp.pokemon_apodo, pp.pokemon_hp, pp.pokemon_current_hp,
             pp.pokemon_level,
             pp.personaje_pokemon_exahust_lvl, pp.personaje_pokemon_dsts, pp.personaje_pokemon_dstf,
-            pp.personaje_pokemon_estados, pp.pokemon_is_shiny, pp.personaje_pokemon_terreno,
+            pp.personaje_pokemon_estados, pp.personaje_pokemon_estados_meta, pp.pokemon_is_shiny, pp.personaje_pokemon_terreno,
             pk.pokemon_media_sprite, pk.pokemon_media_sprite_shiny, pk.pokemon_media_main
      FROM ${TPP} pp JOIN ${TPOKEDEX} pk ON pk.pokemon_id = pp.id_pokemon
      WHERE pp.id_personaje = ANY($1::int[]) AND pp.pokemon_en_equipo = true
@@ -1258,35 +1258,36 @@ const updateEquipoCantidad = async (id_personaje_equipo, cantidad) => {
 }
 
 // ── Estados alterados ───────────────────────────────────────────────────────
-// La columna admite una lista separada por comas, pero un ser vivo tiene un
-// solo estado a la vez: se guarda uno o ninguno. Los pone y los quita cada
-// quien sobre sí mismo y sobre sus Pokémon.
+// Uno no volátil y uno volátil a la vez (lib/estados.js), con sus datos en
+// *_estados_meta. Los pone y los quita cada quien sobre lo suyo (y el DM).
+const { ESTADOS, sanearEstados, sanearMeta } = require('../lib/estados')
 
-const ESTADOS = ['paralizado', 'dormido', 'envenenado', 'quemado', 'congelado', 'confuso']
-
-/** Un solo estado a la vez: el primero conocido de lo pedido, o ninguno */
-const sanearEstados = (lista) => {
-  const pedido = (Array.isArray(lista) ? lista : String(lista ?? '').split(','))
-    .map(e => String(e).trim().toLowerCase())
-    .find(e => ESTADOS.includes(e))
-  return pedido || null
+// meta: undefined = se conservan los datos que sigan valiendo
+const setEstadosPersonaje = async (id_personaje, estados, meta) => {
+  const texto = sanearEstados(estados)
+  const { rows } = await query(
+    `UPDATE ${T} SET personaje_estados = $2,
+            personaje_estados_meta = $3::jsonb
+      WHERE id_personaje = $1 RETURNING personaje_estados, personaje_estados_meta`,
+    [id_personaje, texto, JSON.stringify(sanearMeta(meta === undefined ? await metaActual(T, 'personaje', 'id_personaje', id_personaje) : meta, texto))])
+  return rows.length ? { estados: rows[0].personaje_estados, meta: rows[0].personaje_estados_meta } : { error: 'notfound' }
 }
 
-const setEstadosPersonaje = async (id_personaje, estados) => {
-  const { rows } = await query(
-    `UPDATE ${T} SET personaje_estados = $2 WHERE id_personaje = $1 RETURNING personaje_estados`,
-    [id_personaje, sanearEstados(estados)])
-  return rows.length ? { estados: rows[0].personaje_estados } : { error: 'notfound' }
+const metaActual = async (tabla, prefijo, col, id) => {
+  const { rows } = await query(`SELECT ${prefijo}_estados_meta AS m FROM ${tabla} WHERE ${col} = $1`, [id])
+  return rows[0]?.m ?? null
 }
 
 /** El Pokémon tiene que ser del personaje que pide: si no, no se actualiza nada */
-const setEstadosPokemon = async (id_personaje, id_personaje_pokemon, estados) => {
+const setEstadosPokemon = async (id_personaje, id_personaje_pokemon, estados, meta) => {
+  const texto = sanearEstados(estados)
+  const m = meta === undefined ? await metaActual(TPP, 'personaje_pokemon', 'id_personaje_pokemon', id_personaje_pokemon) : meta
   const { rows } = await query(
-    `UPDATE ${TPP} SET personaje_pokemon_estados = $3
+    `UPDATE ${TPP} SET personaje_pokemon_estados = $3, personaje_pokemon_estados_meta = $4::jsonb
       WHERE id_personaje_pokemon = $2 AND id_personaje = $1
-      RETURNING personaje_pokemon_estados`,
-    [id_personaje, id_personaje_pokemon, sanearEstados(estados)])
-  return rows.length ? { estados: rows[0].personaje_pokemon_estados } : { error: 'notfound' }
+      RETURNING personaje_pokemon_estados, personaje_pokemon_estados_meta`,
+    [id_personaje, id_personaje_pokemon, texto, JSON.stringify(sanearMeta(m, texto))])
+  return rows.length ? { estados: rows[0].personaje_pokemon_estados, meta: rows[0].personaje_pokemon_estados_meta } : { error: 'notfound' }
 }
 
 // Personaje con toda su información relacionada (para la hoja completa)
@@ -2385,7 +2386,7 @@ const addPokemon = async (id_personaje, { id_pokemon, apodo, genero, id_nature, 
 }
 
 module.exports = {
-  ESTADOS, setEstadosPersonaje, setEstadosPokemon,
+  ESTADOS, sanearEstados, setEstadosPersonaje, setEstadosPokemon,
   updateBondPoints, bondOpciones, gastarBondPoints, fijarBondPoints,
   spendPathResource, setPathResource, spendFeatResource, setFeatResource,
   spendHitDice, setHitDice, spendHitDicePokemon, setHitDicePokemon,

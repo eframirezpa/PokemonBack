@@ -45,10 +45,13 @@ const quitar = async (req, res, next) => {
 // PATCH /api/partida/:id/campo/:idcampo  { hidden?, in_ball? }
 const actualizar = async (req, res, next) => {
   try {
-    const { hidden, in_ball } = req.body || {}
+    const { hidden, in_ball, estados, meta } = req.body || {}
     const r = await svc.actualizar(req.params.id, req.user.user_id, req.params.idcampo, {
       hidden: hidden == null ? null : !!hidden,
       in_ball: in_ball == null ? null : !!in_ball,
+      // Ausente: no se toca. null o [] lo quita.
+      estados: estados === undefined ? undefined : (estados ?? []),
+      meta,
     })
     if (r.error === 'notfound') return res.status(404).json({ error: 'No encontrado' })
     res.json(r.campo)

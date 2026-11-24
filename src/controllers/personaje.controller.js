@@ -567,18 +567,18 @@ const transferPokemon = async (req, res, next) => {
 // PATCH /api/personaje/:id/estados  { estados: [...] } → estados del entrenador
 const setEstados = async (req, res, next) => {
   try {
-    const r = await svc.setEstadosPersonaje(req.params.id, req.body?.estados)
+    const r = await svc.setEstadosPersonaje(req.params.id, req.body?.estados, req.body?.meta)
     if (r.error) return res.status(404).json({ error: 'Personaje no encontrado' })
-    res.json({ estados: r.estados })
+    res.json({ estados: r.estados, meta: r.meta })
   } catch (e) { next(e) }
 }
 
 // PATCH /api/personaje/:id/pokemon/:idpp/estados → estados de uno de sus Pokémon
 const setEstadosPokemon = async (req, res, next) => {
   try {
-    const r = await svc.setEstadosPokemon(req.params.id, req.params.idpp, req.body?.estados)
+    const r = await svc.setEstadosPokemon(req.params.id, req.params.idpp, req.body?.estados, req.body?.meta)
     if (r.error) return res.status(404).json({ error: 'Pokémon no encontrado' })
-    res.json({ estados: r.estados })
+    res.json({ estados: r.estados, meta: r.meta })
   } catch (e) { next(e) }
 }
 

@@ -1,6 +1,7 @@
 // Usar un item de medicina/baya que cura HP: elige objetivo (cualquier
 // entrenador o Pokémon de la party), valida la tirada, cura sin pasar del HP
 // máximo real y gasta una unidad, todo en una transacción.
+const { metaTrasQuitar } = require('../lib/estados')
 const { query, transaction, SCHEMA } = require('../config/db')
 const personajeSvc = require('./personaje.service')
 const { parseCuracion, parsePP, parseEstado } = require('../lib/item_curacion')
@@ -136,7 +137,8 @@ const usarEstado = async (id_equipo, it, est, destino) => {
   let quitar
   if (est.modo === 'todos') quitar = tiene
   else if (est.modo === 'uno') quitar = tiene.filter(e => e === String(destino?.estado || '').toLowerCase())
-  else quitar = tiene.filter(e => est.estados.includes(e))
+  // "Poison" cura también el envenenamiento grave
+  else quitar = tiene.filter(e => est.estados.includes(e) || (e === 'envenenado_grave' && est.estados.includes('envenenado')))
   if (est.modo === 'uno' && !destino?.estado) return { error: 'estado' }
   if (!quitar.length) return { error: 'sinEstado' }
 
@@ -147,10 +149,12 @@ const usarEstado = async (id_equipo, it, est, destino) => {
         WHERE id_personaje_equipo = $1 AND personaje_equipo_cantidad > 0`, [id_equipo])
     if (!gasto.rowCount) return { error: 'notfound' }
     const valor = quedan.length ? quedan.join(',') : null
+    // Lo curado pierde sus datos y entra en periodo de gracia
+    const meta = JSON.stringify(metaTrasQuitar(esPokemon ? pk.personaje_pokemon_estados_meta : dueno.personaje_estados_meta, quitar, valor))
     if (esPokemon) {
-      await client.query(`UPDATE ${TPP} SET personaje_pokemon_estados = $1 WHERE id_personaje_pokemon = $2`, [valor, pk.id_personaje_pokemon])
+      await client.query(`UPDATE ${TPP} SET personaje_pokemon_estados = $1, personaje_pokemon_estados_meta = $3::jsonb WHERE id_personaje_pokemon = $2`, [valor, pk.id_personaje_pokemon, meta])
     } else {
-      await client.query(`UPDATE ${T} SET personaje_estados = $1 WHERE id_personaje = $2`, [valor, dueno.id_personaje])
+      await client.query(`UPDATE ${T} SET personaje_estados = $1, personaje_estados_meta = $3::jsonb WHERE id_personaje = $2`, [valor, dueno.id_personaje, meta])
     }
     return { tipoEfecto: 'estado', curados: quitar, cantidad: Number(it.cantidad) - 1,
       objetivo: esPokemon ? (pk.pokemon_apodo || 'Pokémon') : (dueno.nombre_personaje || 'Jugador') }

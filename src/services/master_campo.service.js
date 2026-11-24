@@ -6,6 +6,7 @@
 // HP y el resto de datos siguen viviendo donde ya vivían (master_pokemon,
 // master_npc) y se leen aparte.
 const { query, SCHEMA } = require('../config/db')
+const { sanearEstados, sanearMeta } = require('../lib/estados')
 
 const TC  = `"${SCHEMA}"."master_campo"`
 const TMP = `"${SCHEMA}"."master_pokemon"`
@@ -28,12 +29,12 @@ const MAX_NPC     = 10
  */
 const listar = async (id_partida) => {
   const { rows: pokemones } = await query(
-    `SELECT id_campo, id_master_pokemon, campo_hidden AS hidden, campo_in_ball AS in_ball
+    `SELECT id_campo, id_master_pokemon, campo_hidden AS hidden, campo_in_ball AS in_ball, campo_estados AS estados, campo_estados_meta AS estados_meta
        FROM ${TC} WHERE id_partida = $1 AND id_master_pokemon IS NOT NULL
       ORDER BY id_campo`,
     [id_partida])
   const { rows: npcs } = await query(
-    `SELECT c.id_campo, c.id_master_npc, c.campo_hidden AS hidden,
+    `SELECT c.id_campo, c.id_master_npc, c.campo_hidden AS hidden, c.campo_estados AS estados, c.campo_estados_meta AS estados_meta,
             n.master_npc_apodo, n.master_npc_level, n.master_npc_hp,
             n.master_npc_current_hp, n.master_npc_avatar
        FROM ${TC} c JOIN ${TN} n ON n.id_master_npc = c.id_master_npc
@@ -86,16 +87,31 @@ const quitar = async (id_partida, id_master, id_campo) => {
   return { ok: rowCount > 0 }
 }
 
-/** Cambia oculto y/o pokébola de una entrada ya invocada. */
-const actualizar = async (id_partida, id_master, id_campo, { hidden, in_ball } = {}) => {
+/** Cambia oculto, pokébola y/o estados de una entrada ya invocada.
+ *  estados: undefined = no se toca; lista o texto = uno no volátil + uno volátil.
+ *  meta: datos de los estados (undefined = se conservan los que sigan valiendo). */
+const actualizar = async (id_partida, id_master, id_campo, { hidden, in_ball, estados, meta } = {}) => {
   if (!(await esDuenio(id_partida, id_master))) return { error: 'notfound' }
+  const tocaEstado = estados !== undefined
+  let texto = null, metaFinal = null
+  if (tocaEstado) {
+    texto = sanearEstados(estados)
+    let m = meta
+    if (m === undefined) {
+      const { rows } = await query(`SELECT campo_estados_meta AS m FROM ${TC} WHERE id_campo = $1 AND id_partida = $2`, [id_campo, id_partida])
+      m = rows[0]?.m ?? null
+    }
+    metaFinal = sanearMeta(m, texto)
+  }
   const { rows } = await query(
     `UPDATE ${TC}
         SET campo_hidden  = COALESCE($3, campo_hidden),
-            campo_in_ball  = COALESCE($4, campo_in_ball)
+            campo_in_ball  = COALESCE($4, campo_in_ball),
+            campo_estados  = CASE WHEN $5 THEN $6 ELSE campo_estados END,
+            campo_estados_meta = CASE WHEN $5 THEN $7::jsonb ELSE campo_estados_meta END
       WHERE id_campo = $1 AND id_partida = $2
-      RETURNING id_campo, campo_hidden AS hidden, campo_in_ball AS in_ball`,
-    [id_campo, id_partida, hidden ?? null, in_ball ?? null])
+      RETURNING id_campo, campo_hidden AS hidden, campo_in_ball AS in_ball, campo_estados AS estados, campo_estados_meta AS estados_meta`,
+    [id_campo, id_partida, hidden ?? null, in_ball ?? null, tocaEstado, texto, JSON.stringify(metaFinal)])
   if (!rows.length) return { error: 'notfound' }
   return { campo: rows[0] }
 }
